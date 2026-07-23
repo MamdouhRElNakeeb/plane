@@ -1,0 +1,46 @@
+name: Crete custom validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "crete/**"
+  pull_request:
+    branches:
+      - "crete/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      TURBO_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+
+      - name: Enable Corepack and pnpm
+        run: corepack enable pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run repository checks
+        run: pnpm check
+
+      - name: Run web tests
+        run: pnpm --filter web test
+
+      - name: Build web application
+        run: pnpm build --filter=web...
