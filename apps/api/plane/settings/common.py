@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     "plane.license",
     "plane.api",
     "plane.authentication",
+    "plane.crete_ai.apps.CreteAIConfig",
     # Third-party things
     "rest_framework",
     "corsheaders",
@@ -123,6 +124,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "30/minute",
         "asset_id": "5/minute",
+        "crete_ai": os.environ.get("CRETE_AI_RATE_LIMIT", "60/minute"),
+        "crete_ai_chat": os.environ.get("CRETE_AI_CHAT_RATE_LIMIT", "10/minute"),
     },
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_RENDERER_CLASSES": ("rest_framework.renderers.JSONRenderer",),
@@ -313,6 +316,23 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["application/json"]
+
+# Internal Crete AI service. Requests are authenticated with a shared-secret
+# HMAC; the secret is supplied only through the environment.
+CRETE_AI_SERVICE_URL = os.environ.get("CRETE_AI_SERVICE_URL", "")
+CRETE_AI_SHARED_SECRET = os.environ.get("CRETE_AI_SHARED_SECRET", "")
+CRETE_AI_CHAT_MODEL = os.environ.get("CRETE_AI_CHAT_MODEL", "gpt-5.4-mini")
+CRETE_AI_CONNECT_TIMEOUT = int(os.environ.get("CRETE_AI_CONNECT_TIMEOUT", "5"))
+CRETE_AI_READ_TIMEOUT = int(os.environ.get("CRETE_AI_READ_TIMEOUT", "120"))
+CRETE_AI_PROMPT_CHARS = int(os.environ.get("CRETE_AI_PROMPT_CHARS", "12000"))
+CRETE_AI_THREAD_TITLE_CHARS = int(os.environ.get("CRETE_AI_THREAD_TITLE_CHARS", "200"))
+CRETE_AI_RETRIEVAL_LIMIT = int(os.environ.get("CRETE_AI_RETRIEVAL_LIMIT", "8"))
+CRETE_AI_CONTEXT_ITEM_LIMIT = int(os.environ.get("CRETE_AI_CONTEXT_ITEM_LIMIT", "8"))
+CRETE_AI_CONTEXT_ITEM_CHARS = int(os.environ.get("CRETE_AI_CONTEXT_ITEM_CHARS", "4000"))
+CRETE_AI_CONTEXT_TOTAL_CHARS = int(os.environ.get("CRETE_AI_CONTEXT_TOTAL_CHARS", "20000"))
+CRETE_AI_CONTEXT_COMMENT_LIMIT = 5
+CRETE_AI_CONTEXT_COMMENT_CHARS = int(os.environ.get("CRETE_AI_CONTEXT_COMMENT_CHARS", "2000"))
+CRETE_AI_ACTION_HTML_CHARS = int(os.environ.get("CRETE_AI_ACTION_HTML_CHARS", "100000"))
 
 
 CELERY_IMPORTS = (

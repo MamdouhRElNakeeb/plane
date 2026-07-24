@@ -1,0 +1,45 @@
+name: Crete AI Images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: plane-web
+            context: .
+            dockerfile: apps/web/Dockerfile.web
+          - image: plane-backend
+            context: apps/api
+            dockerfile: apps/api/Dockerfile.api
+          - image: plane-ai
+            context: apps/ai
+            dockerfile: apps/ai/Dockerfile
+          - image: plane-ai-backup
+            context: apps/ai
+            dockerfile: apps/ai/Dockerfile.backup
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:ai-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

@@ -10,6 +10,8 @@ import { observer } from "mobx-react";
 import { cn } from "@plane/utils";
 import { AppRailRoot } from "@/components/navigation";
 import { useAppRailVisibility } from "@/lib/app-rail";
+import { useWorkspacePaths } from "@/hooks/use-workspace-paths";
+import { CreteAIAssistantPanel } from "@/plane-web/components/crete-ai";
 // local imports
 import { TopNavigationRoot } from "../navigations";
 
@@ -20,6 +22,7 @@ export const WorkspaceContentWrapper = observer(function WorkspaceContentWrapper
 }) {
   // Use the context to determine if app rail should render
   const { shouldRenderAppRail } = useAppRailVisibility();
+  const { isAiPath } = useWorkspacePaths();
 
   return (
     <div className="relative flex size-full flex-col overflow-hidden bg-canvas transition-all duration-300 ease-in-out">
@@ -29,7 +32,7 @@ export const WorkspaceContentWrapper = observer(function WorkspaceContentWrapper
         {shouldRenderAppRail && <AppRailRoot />}
         <div
           className={cn(
-            "relative size-full flex-grow overflow-hidden pr-2 pb-2 pl-2 transition-all duration-300 ease-in-out",
+            "relative size-full min-w-0 flex-grow overflow-hidden pr-2 pb-2 pl-2 transition-all duration-300 ease-in-out",
             {
               "pl-0!": shouldRenderAppRail,
             }
@@ -37,6 +40,7 @@ export const WorkspaceContentWrapper = observer(function WorkspaceContentWrapper
         >
           {children}
         </div>
+        {!isAiPath && <CreteAIAssistantPanel />}
       </div>
     </div>
   );

@@ -1,0 +1,297 @@
+# Copyright (c) 2023-present Plane Software, Inc. and contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+# See the LICENSE file for details.
+
+from datetime import UTC, datetime
+from uuid import uuid4
+
+from conftest import FakeAzure, FakeRepository, signed_headers, signed_json
+
+from crete_plane_ai.azure import AzureStreamEvent
+
+
+def test_health_is_public(client) -> None:
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_thread_crud_is_scoped_to_owner(client, settings, repository: FakeRepository) -> None:
+    create_response = signed_json(
+        client,
+        settings,
+        "POST",
+        f"/internal/workspaces/{repository.workspace_id}/threads",
+        {
+            "user_id": str(repository.user_id),
+            "authorization_version": 1,
+            "title": "Release planning",
+            "context_type": "workspace",
+        },
+    )
+    assert create_response.status_code == 201
+    assert create_response.json()["id"] == str(repository.thread_id)
+
+    get_url = (
+        f"/internal/workspaces/{repository.workspace_id}/threads/{repository.thread_id}?user_id={repository.user_id}"
+    )
+    assert client.get(get_url, headers=signed_headers(settings, "GET", get_url)).status_code == 200
+
+    other_user_url = f"/internal/workspaces/{repository.workspace_id}/threads/{repository.thread_id}?user_id={uuid4()}"
+    assert client.get(other_user_url, headers=signed_headers(settings, "GET", other_user_url)).status_code == 404
+
+    delete_response = client.delete(get_url, headers=signed_headers(settings, "DELETE", get_url))
+    assert delete_response.status_code == 204
+
+
+def test_retrieve_returns_ranked_ids_only(
+    client,
+    settings,
+    repository: FakeRepository,
+) -> None:
+    allowed_project = uuid4()
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/retrieve",
+        {
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "query": "authentication regression",
+            "allowed_project_ids": [str(allowed_project)],
+            "project_id": str(allowed_project),
+            "limit": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    match = response.json()["matches"][0]
+    assert set(match) == {"object_id", "score"}
+    assert repository.retrieve_arguments is not None
+    assert repository.retrieve_arguments["workspace_id"] == repository.workspace_id
+    assert repository.retrieve_arguments["allowed_project_ids"] == [allowed_project]
+
+
+def test_index_generates_embedding_and_upserts(
+    client,
+    settings,
+    repository: FakeRepository,
+) -> None:
+    object_id = uuid4()
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/index",
+        {
+            "object_type": "issue",
+            "object_id": str(object_id),
+            "workspace_id": str(repository.workspace_id),
+            "project_id": str(uuid4()),
+            "title": "Title",
+            "content": "Current content",
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"object_id": str(object_id), "indexed": True}
+    assert repository.index_arguments is not None
+    assert len(repository.index_arguments["embedding"]) == 1536
+
+
+def test_index_deletion_is_scoped_to_workspace_and_object_type(
+    client,
+    settings,
+    repository: FakeRepository,
+) -> None:
+    object_id = uuid4()
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/index/delete",
+        {
+            "object_type": "issue",
+            "object_id": str(object_id),
+            "workspace_id": str(repository.workspace_id),
+        },
+    )
+
+    assert response.status_code == 200
+    assert repository.delete_arguments == {
+        "object_type": "issue",
+        "object_id": object_id,
+        "workspace_id": repository.workspace_id,
+    }
+
+
+def test_chat_stream_persists_messages_and_proposes_without_executing(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    project_id = uuid4()
+    issue_id = uuid4()
+
+    async def stream_chat(**_values):
+        yield AzureStreamEvent(kind="delta", delta="I can draft that.")
+        yield AzureStreamEvent(
+            kind="tool_call",
+            action_name="create_comment",
+            arguments={
+                "project_id": str(project_id),
+                "issue_id": str(issue_id),
+                "comment_html": "<p>Ready for review.</p>",
+            },
+        )
+        yield AzureStreamEvent(kind="completed")
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "Add a ready-for-review comment.",
+            "context_type": "work_item",
+            "project_id": str(project_id),
+            "issue_id": str(issue_id),
+            "context_items": [
+                {
+                    "object_type": "issue",
+                    "object_id": str(issue_id),
+                    "project_id": str(project_id),
+                    "title": "Release",
+                    "content": "Description",
+                }
+            ],
+            "model": "gpt-5.1-chat",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "event: message.delta" in response.text
+    assert "event: proposal.created" in response.text
+    assert "event: message.completed" in response.text
+    assert "data: [DONE]" in response.text
+    assert [(message["role"], message["content"]) for message in repository.messages] == [
+        ("user", "Add a ready-for-review comment."),
+        ("assistant", "I can draft that."),
+    ]
+    assert len(repository.actions) == 1
+    assert repository.actions[0]["status"] == "pending"
+    assert repository.actions[0]["action_name"] == "create_comment"
+    assert repository.actions[0]["message_id"] == repository.messages[1]["id"]
+
+
+def test_chat_accepts_current_model_alias(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    received: dict[str, str | None] = {}
+
+    async def stream_chat(**values):
+        received["deployment"] = values["deployment"]
+        yield AzureStreamEvent(kind="delta", delta="Done")
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "Summarize this workspace.",
+            "context_type": "workspace",
+            "context_items": [],
+            "current_model": "backend-selected-deployment",
+        },
+    )
+
+    assert response.status_code == 200
+    assert received["deployment"] == "backend-selected-deployment"
+    assert "event: message.completed" in response.text
+
+
+def test_chat_rejects_tool_ids_outside_permission_checked_context(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    project_id = uuid4()
+    issue_id = uuid4()
+
+    async def stream_chat(**_values):
+        yield AzureStreamEvent(
+            kind="tool_call",
+            action_name="edit_issue_description",
+            arguments={
+                "project_id": str(project_id),
+                "issue_id": str(uuid4()),
+                "description_html": "<p>Changed</p>",
+            },
+        )
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "Change the description.",
+            "context_type": "work_item",
+            "project_id": str(project_id),
+            "issue_id": str(issue_id),
+            "context_items": [],
+            "model": "gpt-5.1-chat",
+        },
+    )
+
+    assert "event: error" in response.text
+    assert repository.actions == []
+    assert not any(message["role"] == "assistant" for message in repository.messages)
+
+
+def test_action_completion_is_idempotent(client, settings, repository: FakeRepository) -> None:
+    repository.actions.append(
+        {
+            "id": repository.action_id,
+            "workspace_id": repository.workspace_id,
+            "user_id": repository.user_id,
+            "status": "pending",
+        }
+    )
+    payload = {
+        "workspace_id": str(repository.workspace_id),
+        "user_id": str(repository.user_id),
+        "result": {"comment_id": str(uuid4())},
+    }
+    url = f"/internal/actions/{repository.action_id}/complete"
+
+    first = signed_json(client, settings, "POST", url, payload)
+    second = signed_json(client, settings, "POST", url, {**payload, "result": {"ignored": True}})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["result"] == payload["result"]

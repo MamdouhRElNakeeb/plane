@@ -44,6 +44,7 @@ from plane.bgtasks.issue_activities_task import issue_activity
 from plane.bgtasks.issue_description_version_task import issue_description_version_task
 from plane.bgtasks.recent_visited_task import recent_visited_task
 from plane.bgtasks.webhook_task import model_activity
+from plane.crete_ai.signals import enqueue_issue_index_deletions
 from plane.db.models import (
     CycleIssue,
     FileAsset,
@@ -767,16 +768,19 @@ class BulkDeleteIssuesEndpoint(BaseAPIView):
 
         issues = Issue.issue_objects.filter(workspace__slug=slug, project_id=project_id, pk__in=issue_ids)
 
-        total_issues = len(issues)
+        issue_refs = list(issues.values_list("id", "workspace_id"))
+        scoped_issue_ids = [issue_id for issue_id, _ in issue_refs]
+        total_issues = len(scoped_issue_ids)
 
         # First, delete all related cycle issues
-        CycleIssue.objects.filter(issue_id__in=issue_ids).delete()
+        CycleIssue.objects.filter(issue_id__in=scoped_issue_ids).delete()
 
         # Then, delete all related module issues
-        ModuleIssue.objects.filter(issue_id__in=issue_ids).delete()
+        ModuleIssue.objects.filter(issue_id__in=scoped_issue_ids).delete()
 
         # Finally, delete the issues themselves
         issues.delete()
+        enqueue_issue_index_deletions(issue_refs)
 
         return Response(
             {"message": f"{total_issues} issues were deleted"},

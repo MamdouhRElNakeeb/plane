@@ -1,0 +1,98 @@
+services:
+  ai-api:
+    build:
+      context: ../../apps/ai
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      ai-db:
+        condition: service_healthy
+    environment:
+      AI_DATABASE_URL: ${AI_DATABASE_URL:?AI_DATABASE_URL is required}
+      CRETE_AI_SHARED_SECRET: ${CRETE_AI_SHARED_SECRET:?CRETE_AI_SHARED_SECRET is required}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:?AZURE_OPENAI_ENDPOINT is required}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:?AZURE_OPENAI_API_KEY is required}
+      AZURE_OPENAI_CHAT_DEPLOYMENT: ${AZURE_OPENAI_CHAT_DEPLOYMENT:-gpt-5.4-mini}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-text-embedding-3-small}
+      AI_EMBEDDING_DIMENSIONS: "1536"
+      AI_DATABASE_POOL_MIN_SIZE: ${AI_DATABASE_POOL_MIN_SIZE:-1}
+      AI_DATABASE_POOL_MAX_SIZE: ${AI_DATABASE_POOL_MAX_SIZE:-10}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - crete-ai
+      - plane
+
+  ai-db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AI_POSTGRES_DB:-plane_ai}
+      POSTGRES_USER: ${AI_POSTGRES_USER:-plane_ai}
+      POSTGRES_PASSWORD: ${AI_POSTGRES_PASSWORD:?AI_POSTGRES_PASSWORD is required}
+    volumes:
+      - ai-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - crete-ai
+
+  ai-backup:
+    build:
+      context: ../../apps/ai
+      dockerfile: Dockerfile.backup
+    restart: "no"
+    profiles:
+      - backup
+    depends_on:
+      ai-db:
+        condition: service_healthy
+    environment:
+      AI_DATABASE_URL: ${AI_DATABASE_URL:?AI_DATABASE_URL is required}
+      BACKUP_ACCESS_KEY_ID: ${BACKUP_ACCESS_KEY_ID:?BACKUP_ACCESS_KEY_ID is required}
+      BACKUP_SECRET_ACCESS_KEY: ${BACKUP_SECRET_ACCESS_KEY:?BACKUP_SECRET_ACCESS_KEY is required}
+      BACKUP_ENDPOINT: ${BACKUP_ENDPOINT:?BACKUP_ENDPOINT is required}
+      BACKUP_REGION: ${BACKUP_REGION:-us-east-1}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:?BACKUP_BUCKET is required}
+      BACKUP_PREFIX: ${BACKUP_PREFIX:-plane-ai/postgres}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      RCLONE_CONFIG_IDRIVE_TYPE: s3
+      RCLONE_CONFIG_IDRIVE_PROVIDER: Other
+      RCLONE_CONFIG_IDRIVE_ACCESS_KEY_ID: ${BACKUP_ACCESS_KEY_ID:?BACKUP_ACCESS_KEY_ID is required}
+      RCLONE_CONFIG_IDRIVE_SECRET_ACCESS_KEY: ${BACKUP_SECRET_ACCESS_KEY:?BACKUP_SECRET_ACCESS_KEY is required}
+      RCLONE_CONFIG_IDRIVE_ENDPOINT: ${BACKUP_ENDPOINT:?BACKUP_ENDPOINT is required}
+      RCLONE_CONFIG_IDRIVE_REGION: ${BACKUP_REGION:-us-east-1}
+      RCLONE_CONFIG_IDRIVE_ENV_AUTH: "false"
+      RCLONE_CONFIG_IDRIVE_ACL: private
+    secrets:
+      - ai_backup_encryption_key
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - crete-ai
+
+volumes:
+  ai-postgres-data:
+
+secrets:
+  ai_backup_encryption_key:
+    file: ${AI_BACKUP_ENCRYPTION_KEY_FILE:?AI_BACKUP_ENCRYPTION_KEY_FILE is required}
+
+networks:
+  crete-ai:
+    name: crete-ai
+  plane:
+    external: true
+    name: ${PLANE_NETWORK_NAME:-plane-plane-xxkbzo}
