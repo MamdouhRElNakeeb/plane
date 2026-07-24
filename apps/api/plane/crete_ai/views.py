@@ -5,6 +5,7 @@ from django.http import StreamingHttpResponse
 from django_redis import get_redis_connection
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.response import Response
 
 from plane.app.views.base import BaseAPIView
@@ -20,6 +21,22 @@ from plane.crete_ai.context import (
 )
 from plane.crete_ai.serializers import ChatRequestSerializer, ThreadCreateSerializer
 from plane.crete_ai.throttles import CreteAIChatThrottle, CreteAIUserThrottle
+
+
+class EventStreamRenderer(BaseRenderer):
+    media_type = "text/event-stream"
+    format = "event-stream"
+    charset = None
+    render_style = "binary"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        if data is None:
+            return b""
+        if isinstance(data, bytes):
+            return data
+        if isinstance(data, str):
+            return data.encode()
+        return JSONRenderer().render(data, accepted_media_type="application/json", renderer_context=renderer_context)
 
 
 def _service_error_response():
@@ -146,6 +163,7 @@ class ThreadDetailEndpoint(CreteAIWorkspaceAPIView):
 
 
 class ThreadChatEndpoint(CreteAIWorkspaceAPIView):
+    renderer_classes = [EventStreamRenderer]
     throttle_classes = [CreteAIUserThrottle, CreteAIChatThrottle]
 
     def post(self, request, slug, thread_id):

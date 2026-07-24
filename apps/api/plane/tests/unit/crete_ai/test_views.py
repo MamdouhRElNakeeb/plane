@@ -3,9 +3,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.test import APIRequestFactory
 
 from plane.crete_ai.views import (
     CreteAIWorkspaceAPIView,
+    EventStreamRenderer,
+    ThreadChatEndpoint,
     _acquire_chat_lock,
     _release_chat_lock,
     _thread_scope_is_current,
@@ -17,6 +20,18 @@ pytestmark = pytest.mark.unit
 
 def test_browser_ai_endpoints_enforce_session_csrf():
     assert CreteAIWorkspaceAPIView.authentication_classes == [SessionAuthentication]
+
+
+def test_chat_endpoint_accepts_event_stream_requests():
+    view = ThreadChatEndpoint()
+    view.format_kwarg = None
+    request = view.initialize_request(APIRequestFactory().post("/", {}, format="json", HTTP_ACCEPT="text/event-stream"))
+
+    renderer, media_type = view.perform_content_negotiation(request)
+
+    assert isinstance(renderer, EventStreamRenderer)
+    assert media_type == "text/event-stream"
+    assert renderer.render({"error": "invalid"}) == b'{"error":"invalid"}'
 
 
 @patch("plane.crete_ai.views.get_redis_connection")
