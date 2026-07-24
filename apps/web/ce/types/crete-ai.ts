@@ -16,6 +16,16 @@ export type TCreteAIProposalStatus = "pending" | "confirming" | "completed" | "e
 
 export type TCreteAIMessageStatus = "streaming" | "completed" | "error";
 
+export interface ICreteAICitation {
+  citationId: number;
+  objectType: "issue";
+  objectId: string;
+  projectId: string;
+  projectIdentifier: string;
+  sequenceId: number;
+  title: string;
+}
+
 export interface ICreteAIProposal {
   id: string;
   messageId?: string;
@@ -32,6 +42,7 @@ export interface ICreteAIMessage {
   content: string;
   createdAt?: string;
   status: TCreteAIMessageStatus;
+  citations: ICreteAICitation[];
   proposals: ICreteAIProposal[];
 }
 

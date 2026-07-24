@@ -11,6 +11,7 @@ from plane.crete_ai.context import (
     ContextValidationError,
     _bound_items,
     collect_chat_context,
+    sanitize_thread_citations,
     validate_context,
 )
 
@@ -61,6 +62,27 @@ def test_context_items_are_bounded_by_count_and_total_text():
 
     assert len(bounded) == 1
     assert len(bounded[0]["title"]) + len(bounded[0]["content"]) <= 9
+
+
+@override_settings(CRETE_AI_CONTEXT_ITEM_LIMIT=2, CRETE_AI_CONTEXT_TOTAL_CHARS=140)
+def test_bounded_issue_context_keeps_citation_metadata_as_valid_json():
+    content = json.dumps(
+        {
+            "identifier": "ENG-42",
+            "description": "x" * 500,
+            "project": {"id": str(uuid4()), "name": "Engineering", "identifier": "ENG"},
+        },
+        separators=(",", ":"),
+    )
+
+    bounded = _bound_items([{"title": "Authentication issue", "content": content}])
+
+    assert len(bounded) == 1
+    assert len(bounded[0]["title"]) + len(bounded[0]["content"]) <= 140
+    bounded_details = json.loads(bounded[0]["content"])
+    assert bounded_details["identifier"] == "ENG-42"
+    assert bounded_details["project"]["identifier"] == "ENG"
+    assert bounded_details["truncated_context"]
 
 
 @override_settings(
@@ -120,7 +142,10 @@ def test_retrieval_results_are_refetched_with_allowed_projects(
 
     assert project_ids == [allowed_project_id]
     assert [item["object_id"] for item in context_items] == [str(allowed_issue_id)]
-    assert json.loads(context_items[0]["content"])["description"] == "Current database description"
+    context_details = json.loads(context_items[0]["content"])
+    assert context_details["identifier"] == "OK-7"
+    assert context_details["project"]["identifier"] == "OK"
+    assert context_details["description"] == "Current database description"
     filter_kwargs = issue_manager.select_related.return_value.filter.call_args.kwargs
     assert filter_kwargs["project_id__in"] == [allowed_project_id]
     retrieve_payload = client.retrieve.call_args.args[0]
@@ -158,3 +183,68 @@ def test_restricted_guests_only_refetch_issues_they_created(
     visibility_filter = candidate_queryset.filter.call_args.args[0]
     assert "project_id__in" in str(visibility_filter)
     assert "created_by" in str(visibility_filter)
+
+
+@override_settings(CRETE_AI_CONTEXT_ITEM_LIMIT=8, CRETE_AI_CONTEXT_ITEM_CHARS=100)
+@patch("plane.crete_ai.context.Issue.issue_objects")
+def test_persisted_citations_are_reauthorized_and_refreshed(issue_manager):
+    project_id = uuid4()
+    issue_id = uuid4()
+    removed_issue_id = uuid4()
+    issue = SimpleNamespace(
+        id=issue_id,
+        project_id=project_id,
+        project=SimpleNamespace(identifier="ENG"),
+        sequence_id=42,
+        name="Current issue title",
+    )
+    issue_manager.select_related.return_value.filter.return_value.filter.return_value = [issue]
+    workspace = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(id=uuid4())
+    thread = {
+        "id": str(uuid4()),
+        "messages": [
+            {
+                "id": str(uuid4()),
+                "citations": [
+                    {
+                        "citation_id": 12,
+                        "object_type": "issue",
+                        "object_id": str(issue_id),
+                        "project_id": str(uuid4()),
+                        "project_identifier": "STALE",
+                        "sequence_id": 1,
+                        "title": "Stale title",
+                    },
+                    {
+                        "citation_id": 3,
+                        "object_type": "issue",
+                        "object_id": str(removed_issue_id),
+                    },
+                ],
+            }
+        ],
+    }
+
+    sanitized = sanitize_thread_citations(
+        thread,
+        workspace,
+        user,
+        {str(project_id)},
+        set(),
+    )
+
+    assert sanitized["messages"][0]["citations"] == [
+        {
+            "citation_id": 12,
+            "object_type": "issue",
+            "object_id": str(issue_id),
+            "project_id": str(project_id),
+            "project_identifier": "ENG",
+            "sequence_id": 42,
+            "title": "Current issue title",
+        }
+    ]
+    filter_kwargs = issue_manager.select_related.return_value.filter.call_args.kwargs
+    assert filter_kwargs["workspace"] is workspace
+    assert set(filter_kwargs["id__in"]) == {issue_id, removed_issue_id}

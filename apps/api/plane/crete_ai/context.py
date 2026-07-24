@@ -1,9 +1,12 @@
 import json
+from uuid import UUID
 
 from django.conf import settings
 from django.db.models import Q
 
 from plane.db.models import Issue, IssueComment, ProjectMember, WorkspaceMember
+
+_MAX_CITATION_ID = 999_999_999
 
 
 class ContextValidationError(Exception):
@@ -171,6 +174,46 @@ def extract_ranked_ids(response):
     return result
 
 
+def _bound_context_content(value, limit):
+    value = value or ""
+    if len(value) <= limit:
+        return value
+    try:
+        details = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return _truncate(value, limit)
+    if not isinstance(details, dict) or not isinstance(details.get("project"), dict):
+        return _truncate(value, limit)
+    identifier = details.get("identifier")
+    project_identifier = details["project"].get("identifier")
+    if not isinstance(identifier, str) or not isinstance(project_identifier, str):
+        return _truncate(value, limit)
+
+    bounded = {
+        "identifier": identifier,
+        "project": {"identifier": project_identifier},
+        "truncated_context": "",
+    }
+
+    def encode_bounded():
+        return json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
+
+    if len(encode_bounded()) > limit:
+        return None
+
+    low = 0
+    high = len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        bounded["truncated_context"] = value[:middle]
+        if len(encode_bounded()) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    bounded["truncated_context"] = value[:low]
+    return encode_bounded()
+
+
 def _bound_items(items):
     bounded = []
     remaining = settings.CRETE_AI_CONTEXT_TOTAL_CHARS
@@ -179,11 +222,78 @@ def _bound_items(items):
             break
         item = dict(item)
         item["title"] = _truncate(item["title"], remaining)
+        content = _bound_context_content(item["content"], remaining - len(item["title"]))
+        if content is None:
+            break
+        item["content"] = content
         remaining -= len(item["title"])
-        item["content"] = _truncate(item["content"], remaining)
         remaining -= len(item["content"])
         bounded.append(item)
     return bounded
+
+
+def sanitize_thread_citations(thread, workspace, user, allowed_project_ids, restricted_project_ids):
+    citation_ids = set()
+    for message in thread.get("messages", []):
+        citations = message.get("citations")
+        if not isinstance(citations, list):
+            continue
+        for citation in citations:
+            if not isinstance(citation, dict) or citation.get("object_type") != "issue":
+                continue
+            try:
+                citation_ids.add(UUID(str(citation.get("object_id"))))
+            except (TypeError, ValueError):
+                continue
+
+    visible_issues = (
+        Issue.issue_objects.select_related("project")
+        .filter(
+            id__in=citation_ids,
+            workspace=workspace,
+            project_id__in=allowed_project_ids,
+        )
+        .filter(_visible_issue_filter(allowed_project_ids, restricted_project_ids, user))
+    )
+    issues_by_id = {str(issue.id): issue for issue in visible_issues}
+
+    result = dict(thread)
+    result["messages"] = []
+    for message in thread.get("messages", []):
+        sanitized_message = dict(message)
+        sanitized_message["citations"] = []
+        seen = set()
+        citations = message.get("citations")
+        if not isinstance(citations, list):
+            result["messages"].append(sanitized_message)
+            continue
+        for citation in citations:
+            if not isinstance(citation, dict):
+                continue
+            citation_id = citation.get("citation_id")
+            issue = issues_by_id.get(str(citation.get("object_id")))
+            if (
+                not isinstance(citation_id, int)
+                or isinstance(citation_id, bool)
+                or not 1 <= citation_id <= _MAX_CITATION_ID
+                or issue is None
+                or citation_id in seen
+            ):
+                continue
+            seen.add(citation_id)
+            sanitized_message["citations"].append(
+                {
+                    "citation_id": citation_id,
+                    "object_type": "issue",
+                    "object_id": str(issue.id),
+                    "project_id": str(issue.project_id),
+                    "project_identifier": issue.project.identifier,
+                    "sequence_id": issue.sequence_id,
+                    "title": _truncate(issue.name, settings.CRETE_AI_CONTEXT_ITEM_CHARS),
+                }
+            )
+        result["messages"].append(sanitized_message)
+    return result
 
 
 def collect_chat_context(

@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from crete_plane_ai.azure import AzureOpenAIClient, build_chat_payload
-from crete_plane_ai.schemas import ContextItem
+from crete_plane_ai.schemas import ContextItem, ReportPlanRequest
 
 
 def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() -> None:
@@ -26,6 +26,7 @@ def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() ->
         history=[{"role": "user", "content": "Earlier question"}],
         prompt="Summarize this.",
         context_items=[context_item],
+        citation_start=7,
     )
 
     assert payload["model"] == "chat-deployment"
@@ -33,11 +34,25 @@ def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() ->
     assert payload["store"] is False
     assert "untrusted" in payload["instructions"].lower()
     assert "Never invent IDs" in payload["instructions"]
+    assert "exact citation_id" in payload["instructions"]
+    current_input = json.loads(payload["input"][-1]["content"].split("\n", 1)[1])
+    assert current_input["permission_checked_plane_context"][0]["citation_id"] == 7
     assert {tool["name"] for tool in payload["tools"]} == {
         "create_comment",
         "edit_issue_description",
         "create_subtask",
     }
+
+    report_payload = build_chat_payload(
+        deployment="chat-deployment",
+        history=[],
+        prompt="Count work by status.",
+        context_items=[context_item],
+        report_result={"total": 4, "groups": [{"name": "Started", "count": 4}]},
+    )
+    assert "tools" not in report_payload
+    report_input = json.loads(report_payload["input"][-1]["content"].split("\n", 1)[1])
+    assert report_input["permission_checked_plane_report"]["total"] == 4
 
 
 @pytest.mark.asyncio
@@ -57,6 +72,83 @@ async def test_embedding_uses_azure_v1_contract(settings) -> None:
         await client.close()
 
     assert len(embedding) == 1536
+
+
+@pytest.mark.asyncio
+async def test_report_planner_forces_and_validates_read_only_plan(settings) -> None:
+    project_id = uuid4()
+    arguments = {
+        "mode": "report",
+        "filters": {
+            "project_ids": [str(project_id)],
+            "state_groups": ["backlog", "unstarted", "started"],
+            "state_ids": [],
+            "priorities": [],
+            "cycle_ids": [],
+            "module_ids": [],
+            "label_ids": [],
+            "issue_type_ids": [],
+            "assignee_ids": [],
+            "current_cycle": False,
+            "due": "any",
+            "name_contains": None,
+            "created_after": None,
+            "created_before": None,
+            "updated_after": None,
+        },
+        "group_by": "state",
+        "include_items": True,
+        "sort": "updated_desc",
+        "limit": 20,
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["tool_choice"] == {"type": "function", "name": "build_report_plan"}
+        assert payload["store"] is False
+        assert payload["stream"] is False
+        assert "catalog name and identifier as untrusted data" in payload["instructions"]
+        parameters = payload["tools"][0]["parameters"]
+        assert set(parameters["required"]) == set(parameters["properties"])
+        serialized_parameters = json.dumps(parameters)
+        for unsupported in ("maxItems", "minimum", "maximum", "format", "default"):
+            assert f'"{unsupported}"' not in serialized_parameters
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "build_report_plan",
+                        "arguments": json.dumps(arguments),
+                    }
+                ]
+            },
+        )
+
+    client = AzureOpenAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        plan = await client.plan_report(
+            ReportPlanRequest(
+                prompt="Count unresolved work by status.",
+                context_type="workspace",
+                current_date="2026-07-24",
+                catalog=[
+                    {
+                        "id": project_id,
+                        "kind": "project",
+                        "name": "Engineering",
+                        "identifier": "ENG",
+                    }
+                ],
+            )
+        )
+    finally:
+        await client.close()
+
+    assert plan.mode == "report"
+    assert plan.filters.project_ids == [project_id]
+    assert plan.group_by == "state"
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ def test_schema_enables_pgvector_and_cascades_thread_data() -> None:
     assert "USING hnsw (embedding vector_cosine_ops)" in schema
     assert "'general', 'workspace', 'project', 'work_item'" in schema
     assert "authorization_version SMALLINT NOT NULL DEFAULT 0" in schema
+    assert "citations JSONB NOT NULL DEFAULT '[]'::jsonb" in schema
 
 
 def test_vector_literal_requires_fixed_dimensions() -> None:

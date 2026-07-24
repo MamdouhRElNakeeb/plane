@@ -7,12 +7,13 @@
 import { useEffect, useRef } from "react";
 import { observer } from "mobx-react";
 import ReactMarkdown from "react-markdown";
-import { Bot, CircleAlert } from "lucide-react";
+import { Bot, CircleAlert, ExternalLink } from "lucide-react";
 import { Button } from "@plane/propel/button";
 import { AiIcon } from "@plane/propel/icons";
 import { Spinner } from "@plane/ui";
-import { cn } from "@plane/utils";
+import { cn, generateWorkItemLink } from "@plane/utils";
 import { useCreteAI } from "@/plane-web/hooks/use-crete-ai";
+import type { ICreteAICitation } from "@/plane-web/types/crete-ai";
 import { CreteAIProposalCard } from "./proposal-card";
 
 type TChatMessagesProps = {
@@ -56,6 +57,43 @@ const Markdown = ({ content }: { content: string }) => (
     </ReactMarkdown>
   </div>
 );
+
+const Citations = ({ citations, workspaceSlug }: { citations: ICreteAICitation[]; workspaceSlug: string }) => {
+  if (citations.length === 0) return null;
+
+  return (
+    <div className="mt-3 border-t border-subtle-1 pt-2">
+      <p className="mb-1.5 text-10 font-medium tracking-wide text-tertiary uppercase">Sources</p>
+      <ul className="space-y-1">
+        {citations.map((citation) => {
+          const identifier = `${citation.projectIdentifier}-${citation.sequenceId}`;
+          return (
+            <li key={`${citation.citationId}:${citation.objectId}`}>
+              <a
+                href={generateWorkItemLink({
+                  workspaceSlug,
+                  projectId: citation.projectId,
+                  issueId: citation.objectId,
+                  projectIdentifier: citation.projectIdentifier,
+                  sequenceId: citation.sequenceId,
+                })}
+                className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-11 text-link-primary hover:bg-layer-transparent-hover hover:text-link-primary-hover"
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`${identifier}: ${citation.title}`}
+              >
+                <span className="shrink-0 font-medium">【{citation.citationId}】</span>
+                <span className="shrink-0">{identifier}</span>
+                <span className="truncate text-tertiary">{citation.title}</span>
+                <ExternalLink className="ml-auto size-3 shrink-0" aria-hidden="true" />
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
 
 export const CreteAIChatMessages = observer(function CreteAIChatMessages({
   workspaceSlug,
@@ -132,6 +170,8 @@ export const CreteAIChatMessages = observer(function CreteAIChatMessages({
                   <Spinner className="size-3.5" /> Thinking
                 </span>
               ) : null}
+
+              <Citations citations={message.citations} workspaceSlug={workspaceSlug} />
 
               {message.proposals.map((proposal) => (
                 <CreteAIProposalCard

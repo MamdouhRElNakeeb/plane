@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 from uuid import UUID
@@ -24,9 +25,13 @@ from crete_plane_ai.schemas import (
     EditIssueDescriptionArguments,
     IndexDeleteRequest,
     IndexRequest,
+    ReportPlanRequest,
     RetrieveRequest,
     ThreadCreate,
 )
+
+_MAX_CITATION_ID = 999_999_999
+_CITATION_PATTERN = re.compile(r"【([1-9]\d{0,8})】")
 
 
 def _sse(event: str, data: Any) -> str:
@@ -41,11 +46,32 @@ def _bounded_history(history: list[dict[str, Any]], max_chars: int) -> list[dict
         content = message.get("content")
         if role not in {"user", "assistant"} or not isinstance(content, str):
             continue
+        if role == "assistant":
+            content = _CITATION_PATTERN.sub("", content)
         bounded.insert(0, {"role": role, "content": content[:remaining]})
         remaining -= min(len(content), remaining)
         if remaining == 0:
             break
     return bounded
+
+
+def _next_citation_id(history: list[dict[str, Any]], context_item_count: int) -> int:
+    citation_ids = [
+        citation.get("citation_id")
+        for message in history
+        if isinstance(message.get("citations"), list)
+        for citation in message["citations"]
+        if isinstance(citation, dict)
+    ]
+    valid_ids = [
+        citation_id
+        for citation_id in citation_ids
+        if isinstance(citation_id, int) and not isinstance(citation_id, bool) and 1 <= citation_id <= _MAX_CITATION_ID
+    ]
+    next_id = max(valid_ids, default=0) + 1
+    if next_id + context_item_count - 1 > _MAX_CITATION_ID:
+        return 1
+    return next_id
 
 
 def _validated_action(event: AzureStreamEvent, body: ChatRequest) -> tuple[str, dict[str, Any]]:
@@ -71,6 +97,49 @@ def _validated_action(event: AzureStreamEvent, body: ChatRequest) -> tuple[str, 
     if issue_pair not in allowed_issue_pairs:
         raise AzureError("chat tool proposal referenced an unavailable object")
     return event.action_name, arguments.model_dump(mode="json")
+
+
+def _citations_from_text(content: str, body: ChatRequest, citation_start: int) -> list[dict[str, Any]]:
+    context_by_citation_id = dict(enumerate(body.context_items, start=citation_start))
+    citations: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for match in _CITATION_PATTERN.finditer(content):
+        citation_id = int(match.group(1))
+        item = context_by_citation_id.get(citation_id)
+        if item is None or citation_id in seen:
+            continue
+        try:
+            details = json.loads(item.content)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(details, dict) or not isinstance(details.get("project"), dict):
+            continue
+        project_identifier = details["project"].get("identifier")
+        identifier = details.get("identifier")
+        if not isinstance(project_identifier, str) or not isinstance(identifier, str):
+            continue
+        prefix = f"{project_identifier}-"
+        if not identifier.startswith(prefix):
+            continue
+        try:
+            sequence_id = int(identifier[len(prefix) :])
+        except ValueError:
+            continue
+        if sequence_id < 1:
+            continue
+        seen.add(citation_id)
+        citations.append(
+            {
+                "citation_id": citation_id,
+                "object_type": item.object_type,
+                "object_id": str(item.object_id),
+                "project_id": str(item.project_id),
+                "project_identifier": project_identifier,
+                "sequence_id": sequence_id,
+                "title": item.title,
+            }
+        )
+    return citations
 
 
 def create_app(
@@ -216,6 +285,14 @@ def create_app(
         )
         return {"object_id": body.object_id, "deleted": deleted}
 
+    @router.post("/report-plan")
+    async def plan_report(request: Request, body: ReportPlanRequest) -> dict[str, Any]:
+        try:
+            plan = await request.app.state.azure.plan_report(body)
+        except AzureError as error:
+            raise HTTPException(status_code=502, detail="AI report planner unavailable") from error
+        return plan.model_dump(mode="json")
+
     @router.post("/chat")
     async def chat(request: Request, body: ChatRequest) -> StreamingResponse:
         repository = request.app.state.repository
@@ -223,15 +300,19 @@ def create_app(
         if len(body.context_items) > active_settings.ai_max_context_items:
             raise HTTPException(status_code=422, detail="too many context items")
         context_chars = sum(len(item.title) + len(item.content) for item in body.context_items)
+        if body.report_result is not None:
+            context_chars += len(json.dumps(body.report_result, separators=(",", ":"), default=str))
         if context_chars > active_settings.ai_max_context_chars:
             raise HTTPException(status_code=422, detail="context items exceed the configured size limit")
         if not await repository.thread_exists(body.workspace_id, body.thread_id, body.user_id):
             raise HTTPException(status_code=404, detail="thread not found")
+        stored_history = await repository.get_history(
+            body.thread_id,
+            active_settings.ai_max_history_messages,
+        )
+        citation_start = _next_citation_id(stored_history, len(body.context_items))
         history = _bounded_history(
-            await repository.get_history(
-                body.thread_id,
-                active_settings.ai_max_history_messages,
-            ),
+            stored_history,
             active_settings.ai_max_history_chars,
         )
         await repository.add_message(body.thread_id, "user", body.prompt)
@@ -245,6 +326,8 @@ def create_app(
                     history=history,
                     prompt=body.prompt,
                     context_items=body.context_items,
+                    citation_start=citation_start,
+                    report_result=body.report_result,
                 ):
                     if event.kind == "delta" and event.delta is not None:
                         assistant_text.append(event.delta)
@@ -252,10 +335,12 @@ def create_app(
                     elif event.kind == "tool_call":
                         action_name, arguments = _validated_action(event, body)
                         proposed_actions.append((action_name, arguments))
+                content = "".join(assistant_text)
                 message = await repository.add_message(
                     body.thread_id,
                     "assistant",
-                    "".join(assistant_text),
+                    content,
+                    citations=_citations_from_text(content, body, citation_start),
                 )
                 for action_name, arguments in proposed_actions:
                     proposal = await repository.create_action(

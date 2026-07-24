@@ -5,6 +5,7 @@
  */
 
 import type {
+  ICreteAICitation,
   ICreteAIMessage,
   ICreteAIProposal,
   ICreteAIRouteContext,
@@ -25,6 +26,15 @@ const readString = (record: TUnknownRecord, keys: string[]): string | undefined 
     const value = record[key];
     if (typeof value === "string" && value.length > 0) return value;
     if (typeof value === "number") return value.toString();
+  }
+  return undefined;
+};
+
+const readNumber = (record: TUnknownRecord, keys: string[]): number | undefined => {
+  for (const key of keys) {
+    const value = record[key];
+    const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
   }
   return undefined;
 };
@@ -87,6 +97,39 @@ const normalizeProposalList = (value: unknown): ICreteAIProposal[] => {
   return value.map(normalizeCreteAIProposal).filter((proposal): proposal is ICreteAIProposal => !!proposal);
 };
 
+export const normalizeCreteAICitation = (value: unknown): ICreteAICitation | undefined => {
+  if (!isRecord(value)) return undefined;
+
+  const citationId = readNumber(value, ["citation_id", "citationId", "source_id", "sourceId"]);
+  const objectType = readString(value, ["object_type", "objectType"]);
+  const objectId = readString(value, ["object_id", "objectId"]);
+  const projectId = readString(value, ["project_id", "projectId"]);
+  const projectIdentifier = readString(value, ["project_identifier", "projectIdentifier"]);
+  const sequenceId = readNumber(value, ["sequence_id", "sequenceId"]);
+  if (!citationId || objectType !== "issue" || !objectId || !projectId || !projectIdentifier || !sequenceId)
+    return undefined;
+
+  return {
+    citationId,
+    objectType,
+    objectId,
+    projectId,
+    projectIdentifier,
+    sequenceId,
+    title: readString(value, ["title", "name"]) ?? `${projectIdentifier}-${sequenceId}`,
+  };
+};
+
+const normalizeCitationList = (value: unknown): ICreteAICitation[] => {
+  if (!Array.isArray(value)) return [];
+  const citations: ICreteAICitation[] = [];
+  for (const candidate of value) {
+    const citation = normalizeCreteAICitation(candidate);
+    if (citation && !citations.some((item) => item.citationId === citation.citationId)) citations.push(citation);
+  }
+  return citations;
+};
+
 export const normalizeCreteAIMessage = (value: unknown): ICreteAIMessage | undefined => {
   if (!isRecord(value)) return undefined;
 
@@ -106,6 +149,7 @@ export const normalizeCreteAIMessage = (value: unknown): ICreteAIMessage | undef
     content,
     createdAt: readString(value, ["created_at", "createdAt"]),
     status: readString(value, ["status"]) === "error" ? "error" : "completed",
+    citations: normalizeCitationList(value.citations ?? value.sources),
     proposals: normalizeProposalList(value.proposals ?? value.actions),
   };
 };
@@ -144,6 +188,7 @@ export const normalizeCreteAIThread = (value: unknown): ICreteAIThread | undefin
           role: "assistant",
           content: "This conversation has actions ready for review.",
           status: "completed",
+          citations: [],
           proposals: [proposal],
         });
     }

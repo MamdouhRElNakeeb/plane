@@ -15,6 +15,7 @@ from pydantic import SecretStr
 from crete_plane_ai.auth import signature_for
 from crete_plane_ai.config import Settings
 from crete_plane_ai.main import create_app
+from crete_plane_ai.schemas import ReportFilters, ReportPlan
 
 
 class FakeRepository:
@@ -85,8 +86,14 @@ class FakeRepository:
     async def get_history(self, thread_id: UUID, limit: int) -> list[dict[str, Any]]:
         return self.messages[-limit:]
 
-    async def add_message(self, thread_id: UUID, role: str, content: str) -> dict[str, Any]:
-        message = {"id": uuid4(), "role": role, "content": content}
+    async def add_message(
+        self,
+        thread_id: UUID,
+        role: str,
+        content: str,
+        citations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        message = {"id": uuid4(), "role": role, "content": content, "citations": citations or []}
         self.messages.append(message)
         return message
 
@@ -150,12 +157,40 @@ class FakeRepository:
 class FakeAzure:
     def __init__(self) -> None:
         self.embedding = [0.0] * 1536
+        self.report_request = None
 
     async def close(self) -> None:
         return None
 
     async def embed(self, text: str) -> list[float]:
         return self.embedding
+
+    async def plan_report(self, body):
+        self.report_request = body
+        return ReportPlan(
+            mode="chat",
+            filters=ReportFilters(
+                project_ids=[],
+                state_groups=[],
+                state_ids=[],
+                priorities=[],
+                cycle_ids=[],
+                module_ids=[],
+                label_ids=[],
+                issue_type_ids=[],
+                assignee_ids=[],
+                current_cycle=False,
+                due="any",
+                name_contains=None,
+                created_after=None,
+                created_before=None,
+                updated_after=None,
+            ),
+            group_by="none",
+            include_items=True,
+            sort="updated_desc",
+            limit=20,
+        )
 
     async def stream_chat(self, **values: Any):
         if False:

@@ -74,6 +74,40 @@ def test_retrieve_returns_ranked_ids_only(
     assert repository.retrieve_arguments["allowed_project_ids"] == [allowed_project]
 
 
+def test_report_planner_is_signed_and_does_not_access_plane_repository(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+) -> None:
+    project_id = uuid4()
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/report-plan",
+        {
+            "prompt": "Count unresolved work by status.",
+            "context_type": "workspace",
+            "current_date": "2026-07-24",
+            "catalog": [
+                {
+                    "id": str(project_id),
+                    "kind": "project",
+                    "name": "Engineering",
+                    "identifier": "ENG",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "chat"
+    assert azure.report_request.prompt == "Count unresolved work by status."
+    assert azure.report_request.catalog[0].id == project_id
+    assert repository.retrieve_arguments is None
+
+
 def test_index_generates_embedding_and_upserts(
     client,
     settings,
@@ -139,7 +173,7 @@ def test_chat_stream_persists_messages_and_proposes_without_executing(
     issue_id = uuid4()
 
     async def stream_chat(**_values):
-        yield AzureStreamEvent(kind="delta", delta="I can draft that.")
+        yield AzureStreamEvent(kind="delta", delta="I can draft that 【1】. Recheck 【1】, not 【99】. items[1].")
         yield AzureStreamEvent(
             kind="tool_call",
             action_name="create_comment",
@@ -171,7 +205,7 @@ def test_chat_stream_persists_messages_and_proposes_without_executing(
                     "object_id": str(issue_id),
                     "project_id": str(project_id),
                     "title": "Release",
-                    "content": "Description",
+                    "content": '{"identifier":"ENG-42","project":{"identifier":"ENG"}}',
                 }
             ],
             "model": "gpt-5.1-chat",
@@ -185,8 +219,20 @@ def test_chat_stream_persists_messages_and_proposes_without_executing(
     assert "data: [DONE]" in response.text
     assert [(message["role"], message["content"]) for message in repository.messages] == [
         ("user", "Add a ready-for-review comment."),
-        ("assistant", "I can draft that."),
+        ("assistant", "I can draft that 【1】. Recheck 【1】, not 【99】. items[1]."),
     ]
+    assert repository.messages[1]["citations"] == [
+        {
+            "citation_id": 1,
+            "object_type": "issue",
+            "object_id": str(issue_id),
+            "project_id": str(project_id),
+            "project_identifier": "ENG",
+            "sequence_id": 42,
+            "title": "Release",
+        }
+    ]
+    assert f'"object_id":"{issue_id}"' in response.text
     assert len(repository.actions) == 1
     assert repository.actions[0]["status"] == "pending"
     assert repository.actions[0]["action_name"] == "create_comment"
@@ -226,6 +272,69 @@ def test_chat_accepts_current_model_alias(
     assert response.status_code == 200
     assert received["deployment"] == "backend-selected-deployment"
     assert "event: message.completed" in response.text
+
+
+def test_chat_uses_new_citation_ids_and_strips_old_markers_from_history(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    project_id = uuid4()
+    issue_id = uuid4()
+    repository.messages.append(
+        {
+            "id": uuid4(),
+            "role": "assistant",
+            "content": "Earlier answer 【1】. items[1].",
+            "citations": [{"citation_id": 1}],
+        }
+    )
+    received: dict[str, object] = {}
+
+    async def stream_chat(**values):
+        received.update(values)
+        yield AzureStreamEvent(kind="delta", delta="Current answer 【2】.")
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "What changed?",
+            "context_type": "workspace",
+            "context_items": [
+                {
+                    "object_type": "issue",
+                    "object_id": str(issue_id),
+                    "project_id": str(project_id),
+                    "title": "Authentication",
+                    "content": '{"identifier":"ENG-42","project":{"identifier":"ENG"}}',
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert received["citation_start"] == 2
+    assert received["history"] == [{"role": "assistant", "content": "Earlier answer . items[1]."}]
+    assert repository.messages[-1]["citations"] == [
+        {
+            "citation_id": 2,
+            "object_type": "issue",
+            "object_id": str(issue_id),
+            "project_id": str(project_id),
+            "project_identifier": "ENG",
+            "sequence_id": 42,
+            "title": "Authentication",
+        }
+    ]
 
 
 def test_chat_rejects_tool_ids_outside_permission_checked_context(

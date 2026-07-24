@@ -277,6 +277,7 @@ export class CreteAIStore implements ICreteAIStore {
       role: "user",
       content: trimmedPrompt,
       status: "completed",
+      citations: [],
       proposals: [],
     };
     const assistantMessage: ICreteAIMessage = {
@@ -284,6 +285,7 @@ export class CreteAIStore implements ICreteAIStore {
       role: "assistant",
       content: "",
       status: "streaming",
+      citations: [],
       proposals: [],
     };
     const controller = new AbortController();
@@ -404,6 +406,7 @@ export class CreteAIStore implements ICreteAIStore {
       const completedText =
         normalizedMessage?.content || getString(completedMessageValue, ["content", "text", "delta"]) || "";
       if (completedText && !message.content) message.content = completedText;
+      if (normalizedMessage?.citations.length) message.citations = normalizedMessage.citations;
       if (normalizedMessage?.proposals.length) {
         for (const proposal of normalizedMessage.proposals) {
           if (!message.proposals.some((item) => item.id === proposal.id)) message.proposals.push(proposal);

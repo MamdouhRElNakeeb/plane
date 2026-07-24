@@ -68,8 +68,13 @@ SCHEMA_STATEMENTS = (
         thread_id UUID NOT NULL REFERENCES ai_threads(id) ON DELETE CASCADE,
         role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant')),
         content TEXT NOT NULL,
+        citations JSONB NOT NULL DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+    """,
+    """
+    ALTER TABLE ai_messages
+    ADD COLUMN IF NOT EXISTS citations JSONB NOT NULL DEFAULT '[]'::jsonb
     """,
     """
     CREATE INDEX IF NOT EXISTS ai_messages_thread_created_idx
@@ -254,9 +259,9 @@ class Repository:
                 return None
             messages_cursor = await connection.execute(
                 """
-                SELECT id, role, content, created_at
+                SELECT id, role, content, citations, created_at
                 FROM (
-                    SELECT id, role, content, created_at
+                    SELECT id, role, content, citations, created_at
                     FROM ai_messages
                     WHERE thread_id = %s
                     ORDER BY created_at DESC
@@ -312,16 +317,22 @@ class Repository:
             row = await cursor.fetchone()
             return bool(row["found"])
 
-    async def add_message(self, thread_id: UUID, role: str, content: str) -> dict[str, Any]:
+    async def add_message(
+        self,
+        thread_id: UUID,
+        role: str,
+        content: str,
+        citations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         async with self.pool.connection() as connection:
             async with connection.transaction():
                 cursor = await connection.execute(
                     """
-                    INSERT INTO ai_messages (thread_id, role, content)
-                    VALUES (%s, %s, %s)
-                    RETURNING id, role, content, created_at
+                    INSERT INTO ai_messages (thread_id, role, content, citations)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, role, content, citations, created_at
                     """,
-                    (thread_id, role, content),
+                    (thread_id, role, content, Jsonb(citations or [])),
                 )
                 if role == "user":
                     await connection.execute(
@@ -344,9 +355,9 @@ class Repository:
         async with self.pool.connection() as connection:
             cursor = await connection.execute(
                 """
-                SELECT role, content
+                SELECT role, content, citations
                 FROM (
-                    SELECT role, content, created_at
+                    SELECT role, content, citations, created_at
                     FROM ai_messages
                     WHERE thread_id = %s
                     ORDER BY created_at DESC

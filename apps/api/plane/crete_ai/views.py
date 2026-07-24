@@ -1,4 +1,6 @@
 from uuid import uuid4
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.http import StreamingHttpResponse
@@ -17,9 +19,16 @@ from plane.crete_ai.context import (
     get_allowed_project_ids,
     get_restricted_guest_project_ids,
     get_workspace_for_user,
+    sanitize_thread_citations,
     validate_context,
 )
 from plane.crete_ai.serializers import ChatRequestSerializer, ThreadCreateSerializer
+from plane.crete_ai.reports import (
+    ReportValidationError,
+    build_report_catalog,
+    execute_report,
+    should_plan_report,
+)
 from plane.crete_ai.throttles import CreteAIChatThrottle, CreteAIUserThrottle
 
 
@@ -149,6 +158,13 @@ class ThreadDetailEndpoint(CreteAIWorkspaceAPIView):
             return _service_error_response()
         if not _thread_scope_is_current(data, current_project_ids, current_restricted_ids):
             return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
+        data = sanitize_thread_citations(
+            data,
+            workspace,
+            request.user,
+            current_project_ids,
+            current_restricted_ids,
+        )
         return Response(data)
 
     def delete(self, request, slug, thread_id):
@@ -180,45 +196,93 @@ class ThreadChatEndpoint(CreteAIWorkspaceAPIView):
             current_project_ids, current_restricted_ids = _current_thread_scope(workspace, request.user)
             if not _thread_scope_is_current(thread, current_project_ids, current_restricted_ids):
                 return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
+            context_type = thread.get("context_type") or "general"
+            context_project_id = thread.get("project_id")
+            context_issue_id = thread.get("issue_id")
             validate_context(
                 workspace,
                 request.user,
-                thread.get("context_type") or "general",
-                project_id=thread.get("project_id"),
-                issue_id=thread.get("issue_id"),
+                context_type,
+                project_id=context_project_id,
+                issue_id=context_issue_id,
             )
             chat_lock_key = f"crete-ai-chat:{workspace.id}:{request.user.id}"
             chat_lock_token = _acquire_chat_lock(
                 chat_lock_key,
-                settings.CRETE_AI_READ_TIMEOUT + 30,
+                (settings.CRETE_AI_READ_TIMEOUT * 2 + 60)
+                if settings.CRETE_AI_REPORTING_ENABLED
+                else (settings.CRETE_AI_READ_TIMEOUT + 30),
             )
             if not chat_lock_token:
                 return Response(
                     {"error": "Another assistant response is already in progress"},
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
-            context_items, _ = collect_chat_context(
-                client=client,
-                workspace=workspace,
-                user=request.user,
-                prompt=data["prompt"],
-                context_type=data["context_type"],
-                project_id=data.get("project_id"),
-                issue_id=data.get("issue_id"),
-            )
+            report_result = None
+            if (
+                settings.CRETE_AI_REPORTING_ENABLED
+                and context_type in {"workspace", "project"}
+                and should_plan_report(data["prompt"])
+            ):
+                catalog, report_project_ids = build_report_catalog(
+                    workspace,
+                    request.user,
+                    current_project_ids,
+                    current_restricted_ids,
+                    context_project_id=context_project_id,
+                )
+                plan = client.plan_report(
+                    {
+                        "prompt": data["prompt"],
+                        "context_type": context_type,
+                        "current_date": datetime.now(ZoneInfo(workspace.timezone)).date().isoformat(),
+                        "catalog": catalog,
+                    }
+                )
+                if plan.get("mode") == "report":
+                    report_result, context_items = execute_report(
+                        plan=plan,
+                        catalog=catalog,
+                        workspace=workspace,
+                        user=request.user,
+                        allowed_project_ids=report_project_ids,
+                        restricted_project_ids=current_restricted_ids,
+                        context_project_id=context_project_id,
+                    )
+                else:
+                    context_items, _ = collect_chat_context(
+                        client=client,
+                        workspace=workspace,
+                        user=request.user,
+                        prompt=data["prompt"],
+                        context_type=context_type,
+                        project_id=context_project_id,
+                        issue_id=context_issue_id,
+                    )
+            else:
+                context_items, _ = collect_chat_context(
+                    client=client,
+                    workspace=workspace,
+                    user=request.user,
+                    prompt=data["prompt"],
+                    context_type=context_type,
+                    project_id=context_project_id,
+                    issue_id=context_issue_id,
+                )
             payload = {
                 "thread_id": str(thread_id),
                 "workspace_id": str(workspace.id),
                 "user_id": str(request.user.id),
                 "prompt": data["prompt"],
-                "context_type": data["context_type"],
+                "context_type": context_type,
                 "context_items": context_items,
                 "current_model": settings.CRETE_AI_CHAT_MODEL,
-                **({"project_id": str(data["project_id"])} if data.get("project_id") else {}),
-                **({"issue_id": str(data["issue_id"])} if data.get("issue_id") else {}),
+                **({"report_result": report_result} if report_result is not None else {}),
+                **({"project_id": str(context_project_id)} if context_project_id else {}),
+                **({"issue_id": str(context_issue_id)} if context_issue_id else {}),
             }
             upstream = client.stream_chat(payload)
-        except ContextValidationError as exc:
+        except (ContextValidationError, ReportValidationError) as exc:
             if chat_lock_key and chat_lock_token:
                 _release_chat_lock(chat_lock_key, chat_lock_token)
             return self.handle_context_error(exc)

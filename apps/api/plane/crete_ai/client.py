@@ -115,6 +115,9 @@ class CreteAIClient:
     def retrieve(self, payload):
         return self.request_json("POST", "/internal/retrieve", payload=payload)
 
+    def plan_report(self, payload):
+        return self.request_json("POST", "/internal/report-plan", payload=payload)
+
     def stream_chat(self, payload):
         return self.request("POST", "/internal/chat", payload=payload, stream=True)
 

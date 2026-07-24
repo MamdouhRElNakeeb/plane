@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   createCreteAISSEParser,
   inferCreteAIContext,
+  normalizeCreteAIMessage,
   normalizeCreteAIProposal,
   normalizeCreteAIThreadList,
 } from "./crete-ai.utils";
@@ -124,6 +125,42 @@ describe("Crete AI normalization utilities", () => {
       status: "pending",
     });
     expect(normalizeCreteAIProposal({ id: "action-2", type: "delete_issue" })).toBeUndefined();
+  });
+
+  it("normalizes only complete work-item citations", () => {
+    const message = normalizeCreteAIMessage({
+      id: "message-1",
+      role: "assistant",
+      content: "Authentication is fixed 【1】.",
+      citations: [
+        {
+          citation_id: 1,
+          object_type: "issue",
+          object_id: "issue-1",
+          project_id: "project-1",
+          project_identifier: "ENG",
+          sequence_id: 42,
+          title: "Fix authentication",
+        },
+        {
+          citation_id: 2,
+          object_type: "page",
+          object_id: "page-1",
+        },
+      ],
+    });
+
+    expect(message?.citations).toEqual([
+      {
+        citationId: 1,
+        objectType: "issue",
+        objectId: "issue-1",
+        projectId: "project-1",
+        projectIdentifier: "ENG",
+        sequenceId: 42,
+        title: "Fix authentication",
+      },
+    ]);
   });
 
   it("attaches persisted proposals to their assistant messages", () => {

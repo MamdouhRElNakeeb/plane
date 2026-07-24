@@ -83,3 +83,23 @@ def test_index_deletion_includes_tenant_scope():
         "object_id": "issue-id",
         "workspace_id": "workspace-id",
     }
+
+
+@override_settings(
+    CRETE_AI_SERVICE_URL="http://crete-ai",
+    CRETE_AI_SHARED_SECRET="shared-secret",
+    CRETE_AI_CONNECT_TIMEOUT=2,
+    CRETE_AI_READ_TIMEOUT=30,
+)
+def test_report_plan_uses_signed_internal_endpoint():
+    response = MagicMock(status_code=200, content=b'{"mode":"report"}')
+    response.json.return_value = {"mode": "report"}
+    session = MagicMock()
+    session.request.return_value = response
+    payload = {"prompt": "Count work by status.", "catalog": []}
+
+    result = CreteAIClient(session=session).plan_report(payload)
+
+    assert result == {"mode": "report"}
+    assert session.request.call_args.args[:2] == ("POST", "http://crete-ai/internal/report-plan")
+    assert session.request.call_args.kwargs["data"] == encode_json(payload)
