@@ -4,7 +4,7 @@
  * See the LICENSE file for details.
  */
 
-export type TCreteAttachmentPreviewKind = "image" | "pdf";
+export type TCreteAttachmentPreviewKind = "image" | "pdf" | "video";
 
 export const CRETE_ATTACHMENT_PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -28,6 +28,18 @@ const PREVIEWABLE_FILE_TYPES: Record<string, { extensions: string[]; kind: TCret
   "image/webp": {
     extensions: ["webp"],
     kind: "image",
+  },
+  "video/mp4": {
+    extensions: ["mp4"],
+    kind: "video",
+  },
+  "video/ogg": {
+    extensions: ["ogg", "ogv"],
+    kind: "video",
+  },
+  "video/webm": {
+    extensions: ["webm"],
+    kind: "video",
   },
 };
 

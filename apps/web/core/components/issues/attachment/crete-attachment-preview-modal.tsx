@@ -76,6 +76,10 @@ export function CreteAttachmentPreviewModal(props: TCreteAttachmentPreviewModal)
   }, [fileName, fileURL, isOpen, previewKind]);
 
   const handleDownload = () => window.open(fileURL, "_blank", "noopener,noreferrer");
+  const handlePreviewError = () => {
+    setObjectURL(undefined);
+    setError(true);
+  };
 
   return (
     <ModalCore
@@ -126,6 +130,19 @@ export function CreteAttachmentPreviewModal(props: TCreteAttachmentPreviewModal)
               data={objectURL}
               type="application/pdf"
               aria-label={`Preview of ${fileName}`}
+            />
+          )}
+
+          {objectURL && previewKind === "video" && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption -- Uploaded attachments do not include caption tracks.
+            <video
+              className="max-h-full max-w-full rounded-md bg-black"
+              src={objectURL}
+              controls
+              playsInline
+              preload="metadata"
+              aria-label={`Preview of ${fileName}`}
+              onError={handlePreviewError}
             />
           )}
         </div>

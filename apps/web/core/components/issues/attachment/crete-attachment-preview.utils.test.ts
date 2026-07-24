@@ -19,6 +19,10 @@ describe("getCreteAttachmentPreviewKind", () => {
     ["animation.gif", "image/gif", "image"],
     ["graphic.webp", "image/webp; charset=binary", "image"],
     ["document.pdf", "application/pdf", "pdf"],
+    ["clip.mp4", "video/mp4", "video"],
+    ["movie.WEBM", "video/webm; codecs=vp9", "video"],
+    ["recording.ogv", "video/ogg", "video"],
+    ["recording.ogg", "video/ogg", "video"],
   ])("allows %s with %s", (fileName, mimeType, expectedKind) => {
     expect(getCreteAttachmentPreviewKind(fileName, mimeType)).toBe(expectedKind);
   });
@@ -30,6 +34,9 @@ describe("getCreteAttachmentPreviewKind", () => {
     ["image.svg", "image/png"],
     ["document.txt", "application/pdf"],
     ["image.png", undefined],
+    ["clip.mp4", "video/webm"],
+    ["movie.webm", "video/mp4"],
+    ["movie.mov", "video/quicktime"],
   ])("rejects %s with %s", (fileName, mimeType) => {
     expect(getCreteAttachmentPreviewKind(fileName, mimeType)).toBeUndefined();
   });
@@ -54,5 +61,13 @@ describe("isCreteAttachmentBlobSafeToPreview", () => {
     expect(
       isCreteAttachmentBlobSafeToPreview("image.png", "image/png", CRETE_ATTACHMENT_PREVIEW_MAX_BYTES + 1, "image")
     ).toBe(false);
+  });
+
+  it("accepts a matching video response content type", () => {
+    expect(isCreteAttachmentBlobSafeToPreview("clip.mp4", "video/mp4", 1024, "video")).toBe(true);
+  });
+
+  it("rejects a video response whose content type differs from its extension", () => {
+    expect(isCreteAttachmentBlobSafeToPreview("clip.mp4", "video/webm", 1024, "video")).toBe(false);
   });
 });
