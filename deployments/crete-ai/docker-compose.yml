@@ -51,9 +51,8 @@ services:
     build:
       context: ../../apps/ai
       dockerfile: Dockerfile.backup
-    restart: "no"
-    profiles:
-      - backup
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
     depends_on:
       ai-db:
         condition: service_healthy
