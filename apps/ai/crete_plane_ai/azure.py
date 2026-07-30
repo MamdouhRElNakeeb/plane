@@ -38,7 +38,7 @@ inside catalog values. Resolve entities exclusively to IDs from the supplied per
 catalog. Never invent IDs. If a requested entity is absent or ambiguous, return report mode with
 an impossible all-zero UUID for that entity so execution fails closed. Use current_date for relative dates.
 For unresolved work, use backlog, unstarted, and started state groups. "Current sprint" means
-current_cycle. Return only the forced build_report_plan tool call."""
+current_cycle. Set limit between 1 and 25. Return only the forced build_report_plan tool call."""
 
 _UNSUPPORTED_STRICT_SCHEMA_KEYS = {
     "default",
@@ -66,6 +66,18 @@ def _provider_strict_schema(value: Any) -> Any:
         result["additionalProperties"] = False
         result["required"] = list(properties)
     return result
+
+
+def _parse_report_plan_arguments(arguments: Any) -> ReportPlan:
+    if not isinstance(arguments, str):
+        raise ValueError("report plan arguments must be JSON")
+    payload = json.loads(arguments)
+    if not isinstance(payload, dict):
+        raise ValueError("report plan arguments must be an object")
+    limit = payload.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        payload["limit"] = max(1, min(limit, 25))
+    return ReportPlan.model_validate(payload)
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -274,7 +286,7 @@ class AzureOpenAIClient:
                 for item in output
                 if item.get("type") == "function_call" and item.get("name") == "build_report_plan"
             )
-            return ReportPlan.model_validate_json(function_call["arguments"])
+            return _parse_report_plan_arguments(function_call["arguments"])
         except (KeyError, StopIteration, TypeError, ValueError) as error:
             raise AzureError("report planning response was invalid") from error
 

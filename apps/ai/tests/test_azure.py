@@ -152,6 +152,63 @@ async def test_report_planner_forces_and_validates_read_only_plan(settings) -> N
 
 
 @pytest.mark.asyncio
+async def test_report_planner_clamps_provider_limit(settings) -> None:
+    arguments = {
+        "mode": "report",
+        "filters": {
+            "project_ids": [],
+            "state_groups": ["backlog", "unstarted", "started"],
+            "state_ids": [],
+            "priorities": [],
+            "cycle_ids": [],
+            "module_ids": [],
+            "label_ids": [],
+            "issue_type_ids": [],
+            "assignee_ids": [],
+            "current_cycle": False,
+            "due": "any",
+            "name_contains": None,
+            "created_after": None,
+            "created_before": None,
+            "updated_after": None,
+        },
+        "group_by": "state",
+        "include_items": False,
+        "sort": "updated_desc",
+        "limit": 100,
+    }
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "build_report_plan",
+                        "arguments": json.dumps(arguments),
+                    }
+                ]
+            },
+        )
+
+    client = AzureOpenAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        plan = await client.plan_report(
+            ReportPlanRequest(
+                prompt="Count unresolved work by status.",
+                context_type="workspace",
+                current_date="2026-07-30",
+                catalog=[],
+            )
+        )
+    finally:
+        await client.close()
+
+    assert plan.limit == 25
+
+
+@pytest.mark.asyncio
 async def test_responses_stream_parses_deltas_and_tool_calls(settings) -> None:
     events = [
         {"type": "response.output_text.delta", "delta": "Drafted"},
