@@ -42,7 +42,7 @@ export function CreteAttachmentPreviewModal(props: TCreteAttachmentPreviewModal)
     const loadPreview = async () => {
       try {
         const response = await fetch(fileURL, {
-          credentials: "include",
+          credentials: "same-origin",
           signal: controller.signal,
         });
 
