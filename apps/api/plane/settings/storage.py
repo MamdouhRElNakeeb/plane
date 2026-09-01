@@ -35,6 +35,7 @@ class S3Storage(S3Boto3Storage):
         self.aws_s3_endpoint_url = os.environ.get("AWS_S3_ENDPOINT_URL") or os.environ.get("MINIO_ENDPOINT_URL")
         # Use the SIGNED_URL_EXPIRATION environment variable for the expiration time (default: 3600 seconds)
         self.signed_url_expiration = int(os.environ.get("SIGNED_URL_EXPIRATION", "3600"))
+        self.aws_s3_upload_method = os.environ.get("AWS_S3_UPLOAD_METHOD", "POST").upper()
 
         if os.environ.get("USE_MINIO") == "1":
             # Determine protocol based on environment variable
@@ -66,6 +67,14 @@ class S3Storage(S3Boto3Storage):
         """Generate a presigned URL to upload an S3 object"""
         if expiration is None:
             expiration = self.signed_url_expiration
+        if self.aws_s3_upload_method == "PUT":
+            return self.generate_presigned_put(
+                object_name=object_name,
+                file_type=file_type,
+                file_size=file_size,
+                expiration=expiration,
+            )
+
         fields = {"Content-Type": file_type}
 
         conditions = [
@@ -97,6 +106,33 @@ class S3Storage(S3Boto3Storage):
             return None
 
         return response
+
+    def generate_presigned_put(self, object_name, file_type, file_size, expiration=None):
+        """Generate a presigned URL to upload an S3 object using PUT"""
+        if expiration is None:
+            expiration = self.signed_url_expiration
+
+        try:
+            response = self.s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.aws_storage_bucket_name,
+                    "Key": object_name,
+                    "ContentType": file_type,
+                    "ContentLength": int(file_size),
+                },
+                ExpiresIn=expiration,
+                HttpMethod="PUT",
+            )
+        except ClientError as e:
+            log_exception(e)
+            return None
+
+        return {
+            "url": response,
+            "method": "PUT",
+            "headers": {"Content-Type": file_type},
+        }
 
     def _get_content_disposition(self, disposition, filename=None):
         """Helper method to generate Content-Disposition header value"""
