@@ -132,18 +132,27 @@ def test_chat_executes_permission_scoped_report_before_streaming():
 
     with (
         patch("plane.crete_ai.views.CreteAIClient", return_value=client),
-        patch("plane.crete_ai.views._current_thread_scope", return_value=({str(project_id)}, set())),
+        patch(
+            "plane.crete_ai.views._current_thread_scope",
+            return_value=({str(project_id)}, set()),
+        ),
         patch("plane.crete_ai.views.validate_context"),
         patch("plane.crete_ai.views._acquire_chat_lock", return_value="lock-token"),
         patch("plane.crete_ai.views.should_plan_report", return_value=True),
-        patch("plane.crete_ai.views.build_report_catalog", return_value=(catalog, [str(project_id)])),
+        patch(
+            "plane.crete_ai.views.build_report_catalog",
+            return_value=(catalog, [str(project_id)]),
+        ),
         patch("plane.crete_ai.views.execute_report", return_value=(report, context_items)) as execute_report,
         patch("plane.crete_ai.views.collect_chat_context") as collect_chat_context,
     ):
         response = view.post(
             SimpleNamespace(
                 user=user,
-                data={"prompt": "Count unresolved work by status.", "context_type": "workspace"},
+                data={
+                    "prompt": "Count unresolved work by status.",
+                    "context_type": "workspace",
+                },
             ),
             "tech",
             thread_id,
@@ -159,7 +168,7 @@ def test_chat_executes_permission_scoped_report_before_streaming():
 
 
 @override_settings(CRETE_AI_REPORTING_ENABLED=False)
-def test_reporting_gate_preserves_old_ai_chat_contract_during_rollout():
+def test_reporting_gate_skips_report_planning_but_includes_action_catalog():
     project_id = uuid4()
     workspace = SimpleNamespace(id=uuid4(), timezone="UTC")
     user = SimpleNamespace(id=uuid4())
@@ -175,14 +184,25 @@ def test_reporting_gate_preserves_old_ai_chat_contract_during_rollout():
     view = ThreadChatEndpoint()
     view.get_workspace = MagicMock(return_value=workspace)
     context_items = [{"object_type": "issue", "object_id": str(uuid4())}]
+    catalog = [{"id": str(project_id), "kind": "project", "name": "Engineering"}]
 
     with (
         patch("plane.crete_ai.views.CreteAIClient", return_value=client),
-        patch("plane.crete_ai.views._current_thread_scope", return_value=({str(project_id)}, set())),
+        patch(
+            "plane.crete_ai.views._current_thread_scope",
+            return_value=({str(project_id)}, set()),
+        ),
         patch("plane.crete_ai.views.validate_context"),
         patch("plane.crete_ai.views._acquire_chat_lock", return_value="lock-token"),
         patch("plane.crete_ai.views.should_plan_report") as should_plan_report,
-        patch("plane.crete_ai.views.collect_chat_context", return_value=(context_items, [project_id])),
+        patch(
+            "plane.crete_ai.views.build_report_catalog",
+            return_value=(catalog, [project_id]),
+        ),
+        patch(
+            "plane.crete_ai.views.collect_chat_context",
+            return_value=(context_items, [project_id]),
+        ),
     ):
         response = view.post(
             SimpleNamespace(
@@ -198,3 +218,4 @@ def test_reporting_gate_preserves_old_ai_chat_contract_during_rollout():
     client.plan_report.assert_not_called()
     payload = client.stream_chat.call_args.args[0]
     assert "report_result" not in payload
+    assert payload["catalog"] == catalog

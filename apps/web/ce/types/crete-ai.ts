@@ -8,9 +8,21 @@ export const CRETE_AI_CONTEXT_TYPES = ["general", "workspace", "project", "work_
 
 export type TCreteAIContextType = (typeof CRETE_AI_CONTEXT_TYPES)[number];
 
-export const CRETE_AI_PROPOSAL_TYPES = ["create_comment", "edit_issue_description", "create_subtask"] as const;
+export const CRETE_AI_PROPOSAL_TYPES = [
+  "create_comment",
+  "edit_issue_description",
+  "create_subtask",
+  "create_issue",
+  "update_issue",
+  "create_module",
+  "create_cycle",
+  "bulk_update_issues",
+  "archive_issues",
+] as const;
 
 export type TCreteAIProposalType = (typeof CRETE_AI_PROPOSAL_TYPES)[number];
+
+export const CRETE_AI_CONFIRMATION_PROPOSAL_TYPES: TCreteAIProposalType[] = ["bulk_update_issues", "archive_issues"];
 
 export type TCreteAIProposalStatus = "pending" | "confirming" | "completed" | "error";
 

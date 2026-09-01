@@ -382,6 +382,176 @@ def test_chat_rejects_tool_ids_outside_permission_checked_context(
     assert not any(message["role"] == "assistant" for message in repository.messages)
 
 
+def test_chat_accepts_create_issue_with_permission_checked_catalog(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    project_id = uuid4()
+    state_id = uuid4()
+
+    async def stream_chat(**values):
+        assert values["catalog"][0].id == project_id
+        yield AzureStreamEvent(
+            kind="tool_call",
+            action_name="create_issue",
+            arguments={
+                "project_id": str(project_id),
+                "name": "Prepare launch checklist",
+                "description_html": "<p>Coordinate launch tasks.</p>",
+                "state_id": str(state_id),
+                "priority": "high",
+                "start_date": None,
+                "target_date": None,
+                "assignee_ids": [],
+                "label_ids": [],
+                "cycle_id": None,
+                "module_ids": [],
+            },
+        )
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "Create a high priority launch checklist.",
+            "context_type": "workspace",
+            "context_items": [],
+            "catalog": [
+                {"id": str(project_id), "kind": "project", "name": "Launch", "identifier": "LAU"},
+                {
+                    "id": str(state_id),
+                    "kind": "state",
+                    "name": "Todo",
+                    "project_id": str(project_id),
+                    "group": "unstarted",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert repository.actions[0]["action_name"] == "create_issue"
+    assert repository.actions[0]["arguments"]["state_id"] == str(state_id)
+
+
+def test_chat_rejects_bulk_action_with_unlisted_work_item(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    project_id = uuid4()
+    listed_issue_id = uuid4()
+
+    async def stream_chat(**_values):
+        yield AzureStreamEvent(
+            kind="tool_call",
+            action_name="bulk_update_issues",
+            arguments={
+                "project_id": str(project_id),
+                "issue_ids": [str(listed_issue_id), str(uuid4())],
+                "fields_to_update": ["priority"],
+                "state_id": None,
+                "priority": "high",
+                "start_date": None,
+                "target_date": None,
+                "assignee_ids": None,
+                "label_ids": None,
+                "cycle_id": None,
+                "module_ids": None,
+            },
+        )
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "Set both listed items to high priority.",
+            "context_type": "workspace",
+            "context_items": [
+                {
+                    "object_type": "issue",
+                    "object_id": str(listed_issue_id),
+                    "project_id": str(project_id),
+                    "title": "Listed item",
+                    "content": '{"identifier":"ENG-7","project":{"identifier":"ENG"}}',
+                }
+            ],
+            "catalog": [{"id": str(project_id), "kind": "project", "name": "Engineering"}],
+        },
+    )
+
+    assert "event: error" in response.text
+    assert repository.actions == []
+
+
+def test_chat_rejects_bulk_action_from_truncated_report(
+    client,
+    settings,
+    repository: FakeRepository,
+    azure: FakeAzure,
+    monkeypatch,
+) -> None:
+    project_id = uuid4()
+    issue_id = uuid4()
+
+    async def stream_chat(**_values):
+        yield AzureStreamEvent(
+            kind="tool_call",
+            action_name="archive_issues",
+            arguments={"project_id": str(project_id), "issue_ids": [str(issue_id)]},
+        )
+
+    monkeypatch.setattr(azure, "stream_chat", stream_chat)
+    response = signed_json(
+        client,
+        settings,
+        "POST",
+        "/internal/chat",
+        {
+            "thread_id": str(repository.thread_id),
+            "workspace_id": str(repository.workspace_id),
+            "user_id": str(repository.user_id),
+            "prompt": "Archive all completed work items.",
+            "context_type": "workspace",
+            "context_items": [
+                {
+                    "object_type": "issue",
+                    "object_id": str(issue_id),
+                    "project_id": str(project_id),
+                    "title": "Completed item",
+                    "content": '{"identifier":"ENG-7","project":{"identifier":"ENG"}}',
+                }
+            ],
+            "catalog": [{"id": str(project_id), "kind": "project", "name": "Engineering"}],
+            "report_result": {
+                "total": 2,
+                "items": [{"object_id": str(issue_id)}],
+                "items_truncated": True,
+            },
+        },
+    )
+
+    assert "event: error" in response.text
+    assert repository.actions == []
+
+
 def test_action_completion_is_idempotent(client, settings, repository: FakeRepository) -> None:
     repository.actions.append(
         {

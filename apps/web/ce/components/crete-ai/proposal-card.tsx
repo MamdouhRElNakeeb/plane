@@ -6,12 +6,18 @@
 
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import { Button } from "@plane/propel/button";
-import type { ICreteAIProposal } from "@/plane-web/types/crete-ai";
+import { CRETE_AI_CONFIRMATION_PROPOSAL_TYPES, type ICreteAIProposal } from "@/plane-web/types/crete-ai";
 
 const ACTION_LABELS: Record<ICreteAIProposal["type"], string> = {
   create_comment: "Create comment",
   edit_issue_description: "Edit work item description",
   create_subtask: "Create sub-work item",
+  create_issue: "Create work item",
+  update_issue: "Update work item",
+  create_module: "Create module",
+  create_cycle: "Create cycle",
+  bulk_update_issues: "Bulk update work items",
+  archive_issues: "Archive work items",
 };
 
 const formatValue = (value: unknown): string => {
@@ -32,6 +38,7 @@ type TProposalCardProps = {
 
 export function CreteAIProposalCard({ proposal, onConfirm }: TProposalCardProps) {
   const payloadEntries = Object.entries(proposal.payload).slice(0, 6);
+  const requiresConfirmation = CRETE_AI_CONFIRMATION_PROPOSAL_TYPES.includes(proposal.type);
 
   return (
     <section
@@ -41,7 +48,9 @@ export function CreteAIProposalCard({ proposal, onConfirm }: TProposalCardProps)
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-12 font-semibold text-primary">{ACTION_LABELS[proposal.type]}</p>
-          <p className="mt-0.5 text-11 text-tertiary">Review this proposed action before applying it.</p>
+          <p className="mt-0.5 text-11 text-tertiary">
+            {requiresConfirmation ? "Review this proposed action before applying it." : "Applying this action."}
+          </p>
         </div>
         {proposal.status === "completed" && (
           <CheckCircle2 className="size-4 shrink-0 text-success-primary" aria-hidden="true" />
@@ -79,7 +88,7 @@ export function CreteAIProposalCard({ proposal, onConfirm }: TProposalCardProps)
         </p>
       )}
 
-      {proposal.status !== "completed" && (
+      {proposal.status !== "completed" && (requiresConfirmation || proposal.status === "error") && (
         <div className="mt-3 flex justify-end">
           <Button
             variant="primary"

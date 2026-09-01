@@ -19,8 +19,13 @@ from crete_plane_ai.config import Settings, get_settings
 from crete_plane_ai.database import Repository
 from crete_plane_ai.schemas import (
     ActionCompleteRequest,
+    ArchiveIssuesArguments,
+    BulkUpdateIssuesArguments,
     ChatRequest,
     CreateCommentArguments,
+    CreateCycleArguments,
+    CreateIssueArguments,
+    CreateModuleArguments,
     CreateSubtaskArguments,
     EditIssueDescriptionArguments,
     IndexDeleteRequest,
@@ -28,6 +33,7 @@ from crete_plane_ai.schemas import (
     ReportPlanRequest,
     RetrieveRequest,
     ThreadCreate,
+    UpdateIssueArguments,
 )
 
 _MAX_CITATION_ID = 999_999_999
@@ -78,24 +84,102 @@ def _validated_action(event: AzureStreamEvent, body: ChatRequest) -> tuple[str, 
     if event.action_name is None or event.arguments is None:
         raise AzureError("chat tool proposal was incomplete")
     allowed_issue_pairs = {(item.project_id, item.object_id) for item in body.context_items}
+    catalog_by_kind_and_id = {(item.kind, item.id): item for item in body.catalog}
+    allowed_project_ids = {item.id for item in body.catalog if item.kind == "project"}
+    allowed_project_ids.update(item.project_id for item in body.context_items)
+    if body.project_id is not None:
+        allowed_project_ids.add(body.project_id)
     if body.project_id is not None and body.issue_id is not None:
         allowed_issue_pairs.add((body.project_id, body.issue_id))
+
+    def validate_project(project_id: UUID) -> None:
+        if project_id not in allowed_project_ids:
+            raise AzureError("chat tool proposal referenced an unavailable project")
+
+    def validate_issue(project_id: UUID, issue_id: UUID) -> None:
+        if (project_id, issue_id) not in allowed_issue_pairs:
+            raise AzureError("chat tool proposal referenced an unavailable work item")
+
+    def validate_reference(kind: str, value: UUID | None, project_id: UUID) -> None:
+        if value is None:
+            return
+        item = catalog_by_kind_and_id.get((kind, value))
+        if item is None or (item.project_id is not None and item.project_id != project_id):
+            raise AzureError(f"chat tool proposal referenced an unavailable {kind}")
+
+    def validate_issue_fields(arguments: Any, project_id: UUID) -> None:
+        validate_reference("state", arguments.state_id, project_id)
+        validate_reference("cycle", arguments.cycle_id, project_id)
+        for module_id in arguments.module_ids or []:
+            validate_reference("module", module_id, project_id)
+        for label_id in arguments.label_ids or []:
+            validate_reference("label", label_id, project_id)
+        for assignee_id in arguments.assignee_ids or []:
+            validate_reference("assignee", assignee_id, project_id)
+
+    def validate_bulk_selection(issue_ids: list[UUID]) -> None:
+        report = body.report_result
+        if not isinstance(report, dict) or report.get("items_truncated") is not False:
+            raise AzureError("bulk actions require a complete work-item report")
+        report_items = report.get("items")
+        if not isinstance(report_items, list):
+            raise AzureError("bulk actions require exact report items")
+        try:
+            report_issue_ids = {
+                UUID(item["object_id"])
+                for item in report_items
+                if isinstance(item, dict) and isinstance(item.get("object_id"), str)
+            }
+        except ValueError as error:
+            raise AzureError("bulk report contained an invalid work-item ID") from error
+        if not report_issue_ids or report_issue_ids != set(issue_ids) or len(report_items) != len(issue_ids):
+            raise AzureError("bulk action targets must exactly match the complete report")
+
     try:
         if event.action_name == "create_comment":
             arguments = CreateCommentArguments.model_validate(event.arguments)
-            issue_pair = (arguments.project_id, arguments.issue_id)
+            validate_project(arguments.project_id)
+            validate_issue(arguments.project_id, arguments.issue_id)
         elif event.action_name == "edit_issue_description":
             arguments = EditIssueDescriptionArguments.model_validate(event.arguments)
-            issue_pair = (arguments.project_id, arguments.issue_id)
+            validate_project(arguments.project_id)
+            validate_issue(arguments.project_id, arguments.issue_id)
         elif event.action_name == "create_subtask":
             arguments = CreateSubtaskArguments.model_validate(event.arguments)
-            issue_pair = (arguments.project_id, arguments.parent_issue_id)
+            validate_project(arguments.project_id)
+            validate_issue(arguments.project_id, arguments.parent_issue_id)
+        elif event.action_name == "create_issue":
+            arguments = CreateIssueArguments.model_validate(event.arguments)
+            validate_project(arguments.project_id)
+            validate_issue_fields(arguments, arguments.project_id)
+        elif event.action_name == "update_issue":
+            arguments = UpdateIssueArguments.model_validate(event.arguments)
+            validate_project(arguments.project_id)
+            validate_issue(arguments.project_id, arguments.issue_id)
+            validate_issue_fields(arguments, arguments.project_id)
+        elif event.action_name == "create_module":
+            arguments = CreateModuleArguments.model_validate(event.arguments)
+            validate_project(arguments.project_id)
+        elif event.action_name == "create_cycle":
+            arguments = CreateCycleArguments.model_validate(event.arguments)
+            validate_project(arguments.project_id)
+        elif event.action_name == "bulk_update_issues":
+            arguments = BulkUpdateIssuesArguments.model_validate(event.arguments)
+            validate_project(arguments.project_id)
+            for issue_id in arguments.issue_ids:
+                validate_issue(arguments.project_id, issue_id)
+            validate_bulk_selection(arguments.issue_ids)
+            validate_issue_fields(arguments, arguments.project_id)
+        elif event.action_name == "archive_issues":
+            arguments = ArchiveIssuesArguments.model_validate(event.arguments)
+            validate_project(arguments.project_id)
+            for issue_id in arguments.issue_ids:
+                validate_issue(arguments.project_id, issue_id)
+            validate_bulk_selection(arguments.issue_ids)
         else:
             raise AzureError("chat proposed an unsupported action")
     except ValidationError as error:
         raise AzureError("chat tool proposal failed validation") from error
-    if issue_pair not in allowed_issue_pairs:
-        raise AzureError("chat tool proposal referenced an unavailable object")
     return event.action_name, arguments.model_dump(mode="json")
 
 
@@ -326,6 +410,7 @@ def create_app(
                     history=history,
                     prompt=body.prompt,
                     context_items=body.context_items,
+                    catalog=body.catalog,
                     citation_start=citation_start,
                     report_result=body.report_result,
                 ):

@@ -25,6 +25,7 @@ import type {
   ICreteAIThread,
   TCreteAIContextType,
 } from "@/plane-web/types/crete-ai";
+import { CRETE_AI_CONFIRMATION_PROPOSAL_TYPES } from "@/plane-web/types/crete-ai";
 
 type TUnknownRecord = Record<string, unknown>;
 
@@ -204,6 +205,7 @@ export class CreteAIStore implements ICreteAIStore {
         this.messages = thread.messages ?? [];
         this.applyThreadContext(thread);
       });
+      this.confirmPendingAutomaticProposals(workspaceSlug);
       return thread;
     } catch (error) {
       runInAction(() => {
@@ -235,6 +237,7 @@ export class CreteAIStore implements ICreteAIStore {
   sendPrompt = async (workspaceSlug: string, prompt: string): Promise<string | undefined> => {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt || this.isLoadingThread) return this.activeThreadId;
+    this.workspaceSlug = workspaceSlug;
     if ((this.contextType === "project" || this.contextType === "work_item") && !this.selectedProjectId) {
       this.error = "Choose a project before sending this prompt.";
       return this.activeThreadId;
@@ -394,8 +397,10 @@ export class CreteAIStore implements ICreteAIStore {
     if (eventType === "proposal.created") {
       const proposalValue = isRecord(eventData) ? (eventData.proposal ?? eventData.action ?? eventData) : eventData;
       const proposal = normalizeCreteAIProposal(proposalValue);
-      if (message && proposal && !message.proposals.some((item) => item.id === proposal.id))
+      if (message && proposal && !message.proposals.some((item) => item.id === proposal.id)) {
         message.proposals.push(proposal);
+        if (this.workspaceSlug) this.confirmPendingAutomaticProposals(this.workspaceSlug);
+      }
       return;
     }
 
@@ -411,6 +416,7 @@ export class CreteAIStore implements ICreteAIStore {
         for (const proposal of normalizedMessage.proposals) {
           if (!message.proposals.some((item) => item.id === proposal.id)) message.proposals.push(proposal);
         }
+        if (this.workspaceSlug) this.confirmPendingAutomaticProposals(this.workspaceSlug);
       }
       message.status = "completed";
       return;
@@ -455,6 +461,15 @@ export class CreteAIStore implements ICreteAIStore {
       if (proposal) return proposal;
     }
     return undefined;
+  }
+
+  private confirmPendingAutomaticProposals(workspaceSlug: string) {
+    for (const message of this.messages) {
+      for (const proposal of message.proposals) {
+        if (proposal.status === "pending" && !CRETE_AI_CONFIRMATION_PROPOSAL_TYPES.includes(proposal.type))
+          void this.confirmProposal(workspaceSlug, proposal.id);
+      }
+    }
   }
 
   private cancelStream() {

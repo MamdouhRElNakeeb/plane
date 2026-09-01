@@ -51,20 +51,40 @@ def _plan(project_id, **filter_overrides):
 def test_report_detection_is_conservative():
     assert should_plan_report("Count unresolved work by status")
     assert should_plan_report("Show overdue high-priority work")
+    assert should_plan_report("Archive all completed work items")
+    assert should_plan_report("Bulk update these tasks")
+    assert should_plan_report("Assign these issues to Alice")
     assert not should_plan_report("Draft a comment explaining the status")
+    assert not should_plan_report("Draft a small comment")
 
 
 def test_catalog_limit_is_shared_fairly_across_entity_kinds():
     groups = [
         [{"kind": kind, "id": f"{kind}-{index}"} for index in range(100)]
-        for kind in ("project", "state", "cycle", "module", "label", "issue_type", "assignee")
+        for kind in (
+            "project",
+            "state",
+            "cycle",
+            "module",
+            "label",
+            "issue_type",
+            "assignee",
+        )
     ]
 
     merged = _merge_catalog_groups(groups, 500)
 
     counts = {kind: sum(item["kind"] == kind for item in merged) for kind in {item["kind"] for item in merged}}
     assert len(merged) == 500
-    assert set(counts) == {"project", "state", "cycle", "module", "label", "issue_type", "assignee"}
+    assert set(counts) == {
+        "project",
+        "state",
+        "cycle",
+        "module",
+        "label",
+        "issue_type",
+        "assignee",
+    }
     assert max(counts.values()) - min(counts.values()) <= 1
 
 
@@ -161,7 +181,9 @@ def test_assignee_filters_require_active_same_project_membership():
 
 
 @patch("plane.crete_ai.reports.IssueAssignee.objects")
-def test_assignee_groups_count_only_valid_assignments_and_separate_unassigned(issue_assignees):
+def test_assignee_groups_count_only_valid_assignments_and_separate_unassigned(
+    issue_assignees,
+):
     assignee_id = uuid4()
     queryset = MagicMock()
     values = issue_assignees.filter.return_value.values.return_value

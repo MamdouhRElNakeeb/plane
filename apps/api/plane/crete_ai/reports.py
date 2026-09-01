@@ -1,9 +1,21 @@
+import re
 from datetime import date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
-from django.db.models import Case, Count, Exists, F, FilteredRelation, IntegerField, OuterRef, Prefetch, Q, When
+from django.db.models import (
+    Case,
+    Count,
+    Exists,
+    F,
+    FilteredRelation,
+    IntegerField,
+    OuterRef,
+    Prefetch,
+    Q,
+    When,
+)
 from django.utils import timezone
 
 from plane.crete_ai.context import _bound_items, _issue_context, _visible_issue_filter
@@ -34,6 +46,10 @@ REPORT_ACTION_HINTS = (
     "summarize",
     "analyze",
     "compare",
+    "bulk",
+    "all",
+    "every",
+    "archive",
 )
 REPORT_ANALYTIC_HINTS = (
     "overdue",
@@ -50,7 +66,17 @@ REPORT_ANALYTIC_HINTS = (
     "workload",
     "progress",
 )
-REPORT_ENTITY_HINTS = ("work item", "work items", "issue", "issues", "tasks", "project", "cycle", "sprint")
+REPORT_MUTATION_HINTS = ("update", "set", "move", "assign", "change")
+REPORT_ENTITY_HINTS = (
+    "work item",
+    "work items",
+    "issue",
+    "issues",
+    "tasks",
+    "project",
+    "cycle",
+    "sprint",
+)
 STATE_GROUPS = {"backlog", "unstarted", "started", "completed", "cancelled"}
 PRIORITIES = {"urgent", "high", "medium", "low", "none"}
 GROUPS = {
@@ -84,9 +110,20 @@ class ReportValidationError(Exception):
 
 def should_plan_report(prompt):
     normalized = prompt.casefold()
-    return any(hint in normalized for hint in REPORT_ACTION_HINTS) or (
-        any(hint in normalized for hint in REPORT_ANALYTIC_HINTS)
-        and any(hint in normalized for hint in REPORT_ENTITY_HINTS)
+
+    def contains(hint):
+        return bool(re.search(rf"\b{re.escape(hint)}\b", normalized))
+
+    return (
+        any(contains(hint) for hint in REPORT_ACTION_HINTS)
+        or (
+            any(contains(hint) for hint in REPORT_ANALYTIC_HINTS)
+            and any(contains(hint) for hint in REPORT_ENTITY_HINTS)
+        )
+        or (
+            any(contains(hint) for hint in REPORT_MUTATION_HINTS)
+            and any(contains(hint) for hint in ("work items", "issues", "tasks"))
+        )
     )
 
 
@@ -129,10 +166,13 @@ def build_report_catalog(
             raise ReportValidationError("Project is outside the report scope")
         scope_project_ids = [context_project_id]
 
-    visible_issues = Issue.issue_objects.filter(
+    restricted_scope_ids = [value for value in scope_project_ids if value in restricted_project_ids]
+    unrestricted_scope_ids = [value for value in scope_project_ids if value not in restricted_project_ids]
+    restricted_visible_issues = Issue.issue_objects.filter(
         workspace=workspace,
-        project_id__in=scope_project_ids,
-    ).filter(_visible_issue_filter(scope_project_ids, restricted_project_ids, user))
+        project_id__in=restricted_scope_ids,
+        created_by=user,
+    )
     now = timezone.now()
     per_kind_limit = settings.CRETE_AI_REPORT_CATALOG_KIND_LIMIT
     projects = list(
@@ -145,7 +185,7 @@ def build_report_catalog(
     project_items = [_catalog_item(project, "project", identifier=project.identifier) for project in projects]
     states = list(
         State.objects.filter(
-            id__in=visible_issues.values("state_id"),
+            Q(project_id__in=unrestricted_scope_ids) | Q(id__in=restricted_visible_issues.values("state_id")),
             is_triage=False,
             deleted_at__isnull=True,
         ).order_by("project_id", "sequence")[:per_kind_limit]
@@ -161,8 +201,11 @@ def build_report_catalog(
     ]
     cycles = list(
         Cycle.objects.filter(
-            issue_cycle__issue__in=visible_issues,
-            issue_cycle__deleted_at__isnull=True,
+            Q(project_id__in=unrestricted_scope_ids)
+            | Q(
+                issue_cycle__issue__in=restricted_visible_issues,
+                issue_cycle__deleted_at__isnull=True,
+            ),
             archived_at__isnull=True,
             deleted_at__isnull=True,
         )
@@ -180,8 +223,11 @@ def build_report_catalog(
     ]
     modules = list(
         Module.objects.filter(
-            issue_module__issue__in=visible_issues,
-            issue_module__deleted_at__isnull=True,
+            Q(project_id__in=unrestricted_scope_ids)
+            | Q(
+                issue_module__issue__in=restricted_visible_issues,
+                issue_module__deleted_at__isnull=True,
+            ),
             archived_at__isnull=True,
             deleted_at__isnull=True,
         )
@@ -193,8 +239,13 @@ def build_report_catalog(
         Label.objects.filter(
             workspace=workspace,
             deleted_at__isnull=True,
-            label_issue__issue__in=visible_issues,
-            label_issue__deleted_at__isnull=True,
+        )
+        .filter(
+            Q(project_id__in=unrestricted_scope_ids)
+            | Q(
+                label_issue__issue__in=restricted_visible_issues,
+                label_issue__deleted_at__isnull=True,
+            ),
         )
         .distinct()
         .order_by("name")[:per_kind_limit]
@@ -212,7 +263,9 @@ def build_report_catalog(
             workspace=workspace,
             is_active=True,
             deleted_at__isnull=True,
-            issue_type__in=visible_issues,
+        )
+        .filter(
+            Q(project_issue_types__project_id__in=unrestricted_scope_ids) | Q(issue_type__in=restricted_visible_issues)
         )
         .distinct()
         .order_by("name")[:per_kind_limit]
@@ -222,12 +275,18 @@ def build_report_catalog(
     members = list(
         User.objects.filter(
             is_active=True,
-            issue_assignee__issue__in=visible_issues,
-            issue_assignee__deleted_at__isnull=True,
-            member_project__project_id__in=scope_project_ids,
-            member_project__project_id=F("issue_assignee__issue__project_id"),
-            member_project__is_active=True,
-            member_project__deleted_at__isnull=True,
+        )
+        .filter(
+            Q(
+                member_project__project_id__in=unrestricted_scope_ids,
+                member_project__role__gte=15,
+                member_project__is_active=True,
+                member_project__deleted_at__isnull=True,
+            )
+            | Q(
+                issue_assignee__issue__in=restricted_visible_issues,
+                issue_assignee__deleted_at__isnull=True,
+            )
         )
         .distinct()
         .order_by("display_name", "email")[:per_kind_limit]
@@ -531,9 +590,16 @@ def _group_report(queryset, group_by):
             "No label",
         ),
     }
-    alias, relation, condition, target_alias, target_relation, target_condition, fields, empty_label = relation_groups[
-        group_by
-    ]
+    (
+        alias,
+        relation,
+        condition,
+        target_alias,
+        target_relation,
+        target_condition,
+        fields,
+        empty_label,
+    ) = relation_groups[group_by]
     values = (
         queryset.annotate(**{alias: FilteredRelation(relation, condition=condition)})
         .annotate(**{target_alias: FilteredRelation(target_relation, condition=target_condition)})

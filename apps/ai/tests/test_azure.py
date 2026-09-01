@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from crete_plane_ai.azure import AzureOpenAIClient, build_chat_payload
-from crete_plane_ai.schemas import ContextItem, ReportPlanRequest
+from crete_plane_ai.schemas import ContextItem, ReportCatalogItem, ReportPlanRequest
 
 
 def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() -> None:
@@ -26,6 +26,14 @@ def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() ->
         history=[{"role": "user", "content": "Earlier question"}],
         prompt="Summarize this.",
         context_items=[context_item],
+        catalog=[
+            ReportCatalogItem(
+                id=context_item.project_id,
+                kind="project",
+                name="Engineering",
+                identifier="ENG",
+            )
+        ],
         citation_start=7,
     )
 
@@ -37,11 +45,22 @@ def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() ->
     assert "exact citation_id" in payload["instructions"]
     current_input = json.loads(payload["input"][-1]["content"].split("\n", 1)[1])
     assert current_input["permission_checked_plane_context"][0]["citation_id"] == 7
+    assert current_input["permission_checked_plane_catalog"][0]["name"] == "Engineering"
     assert {tool["name"] for tool in payload["tools"]} == {
+        "archive_issues",
+        "bulk_update_issues",
         "create_comment",
+        "create_cycle",
+        "create_issue",
+        "create_module",
         "edit_issue_description",
         "create_subtask",
+        "update_issue",
     }
+    for tool in payload["tools"]:
+        parameters = tool["parameters"]
+        assert parameters["additionalProperties"] is False
+        assert set(parameters["required"]) == set(parameters["properties"])
 
     report_payload = build_chat_payload(
         deployment="chat-deployment",
@@ -50,7 +69,7 @@ def test_chat_payload_disables_provider_storage_and_marks_context_untrusted() ->
         context_items=[context_item],
         report_result={"total": 4, "groups": [{"name": "Started", "count": 4}]},
     )
-    assert "tools" not in report_payload
+    assert "tools" in report_payload
     report_input = json.loads(report_payload["input"][-1]["content"].split("\n", 1)[1])
     assert report_input["permission_checked_plane_report"]["total"] == 4
 

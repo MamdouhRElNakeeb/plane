@@ -45,7 +45,11 @@ class EventStreamRenderer(BaseRenderer):
             return data
         if isinstance(data, str):
             return data.encode()
-        return JSONRenderer().render(data, accepted_media_type="application/json", renderer_context=renderer_context)
+        return JSONRenderer().render(
+            data,
+            accepted_media_type="application/json",
+            renderer_context=renderer_context,
+        )
 
 
 def _service_error_response():
@@ -195,7 +199,10 @@ class ThreadChatEndpoint(CreteAIWorkspaceAPIView):
             thread = client.get_thread(workspace.id, thread_id, request.user.id)
             current_project_ids, current_restricted_ids = _current_thread_scope(workspace, request.user)
             if not _thread_scope_is_current(thread, current_project_ids, current_restricted_ids):
-                return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "Conversation not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
             context_type = thread.get("context_type") or "general"
             context_project_id = thread.get("project_id")
             context_issue_id = thread.get("issue_id")
@@ -218,19 +225,19 @@ class ThreadChatEndpoint(CreteAIWorkspaceAPIView):
                     {"error": "Another assistant response is already in progress"},
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
+            catalog, report_project_ids = build_report_catalog(
+                workspace,
+                request.user,
+                current_project_ids,
+                current_restricted_ids,
+                context_project_id=context_project_id,
+            )
             report_result = None
             if (
                 settings.CRETE_AI_REPORTING_ENABLED
                 and context_type in {"workspace", "project"}
                 and should_plan_report(data["prompt"])
             ):
-                catalog, report_project_ids = build_report_catalog(
-                    workspace,
-                    request.user,
-                    current_project_ids,
-                    current_restricted_ids,
-                    context_project_id=context_project_id,
-                )
                 plan = client.plan_report(
                     {
                         "prompt": data["prompt"],
@@ -276,6 +283,7 @@ class ThreadChatEndpoint(CreteAIWorkspaceAPIView):
                 "prompt": data["prompt"],
                 "context_type": context_type,
                 "context_items": context_items,
+                "catalog": catalog,
                 "current_model": settings.CRETE_AI_CHAT_MODEL,
                 **({"report_result": report_result} if report_result is not None else {}),
                 **({"project_id": str(context_project_id)} if context_project_id else {}),

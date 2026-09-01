@@ -138,6 +138,7 @@ class ChatRequest(StrictModel):
     project_id: UUID | None = None
     issue_id: UUID | None = None
     context_items: list[ContextItem] = Field(default_factory=list, max_length=30)
+    catalog: list[ReportCatalogItem] = Field(default_factory=list, max_length=500)
     report_result: dict[str, Any] | None = None
     model: str | None = Field(
         default=None,
@@ -176,7 +177,17 @@ class ActionCompleteRequest(StrictModel):
         return self
 
 
-ActionName = Literal["create_comment", "edit_issue_description", "create_subtask"]
+ActionName = Literal[
+    "create_comment",
+    "edit_issue_description",
+    "create_subtask",
+    "create_issue",
+    "update_issue",
+    "create_module",
+    "create_cycle",
+    "bulk_update_issues",
+    "archive_issues",
+]
 
 
 class CreateCommentArguments(StrictModel):
@@ -196,3 +207,110 @@ class CreateSubtaskArguments(StrictModel):
     parent_issue_id: UUID
     name: str = Field(min_length=1, max_length=255)
     description_html: str = Field(max_length=100_000)
+
+
+class IssueFields(StrictModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description_html: str | None = Field(default=None, max_length=100_000)
+    state_id: UUID | None = None
+    priority: Literal["urgent", "high", "medium", "low", "none"] | None = None
+    start_date: date | None = None
+    target_date: date | None = None
+    assignee_ids: list[UUID] | None = Field(default=None, max_length=20)
+    label_ids: list[UUID] | None = Field(default=None, max_length=20)
+    cycle_id: UUID | None = None
+    module_ids: list[UUID] | None = Field(default=None, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "IssueFields":
+        if self.start_date is not None and self.target_date is not None and self.start_date > self.target_date:
+            raise ValueError("start_date cannot exceed target_date")
+        return self
+
+
+class CreateIssueArguments(IssueFields):
+    project_id: UUID
+    name: str = Field(min_length=1, max_length=255)
+
+
+class UpdateIssueArguments(IssueFields):
+    project_id: UUID
+    issue_id: UUID
+    fields_to_update: list[
+        Literal[
+            "name",
+            "description_html",
+            "state_id",
+            "priority",
+            "start_date",
+            "target_date",
+            "assignee_ids",
+            "label_ids",
+            "cycle_id",
+            "module_ids",
+        ]
+    ] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_changes(self) -> "UpdateIssueArguments":
+        if len(set(self.fields_to_update)) != len(self.fields_to_update):
+            raise ValueError("fields_to_update must not contain duplicates")
+        return self
+
+
+class CreateModuleArguments(StrictModel):
+    project_id: UUID
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=10_000)
+    start_date: date | None = None
+    target_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "CreateModuleArguments":
+        if self.start_date is not None and self.target_date is not None and self.start_date > self.target_date:
+            raise ValueError("start_date cannot exceed target_date")
+        return self
+
+
+class CreateCycleArguments(StrictModel):
+    project_id: UUID
+    name: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=10_000)
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "CreateCycleArguments":
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("start_date and end_date must both be provided or omitted")
+        if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
+            raise ValueError("start_date cannot exceed end_date")
+        return self
+
+
+class BulkUpdateIssuesArguments(IssueFields):
+    project_id: UUID
+    issue_ids: list[UUID] = Field(min_length=1, max_length=25)
+    fields_to_update: list[
+        Literal[
+            "state_id",
+            "priority",
+            "start_date",
+            "target_date",
+            "assignee_ids",
+            "label_ids",
+            "cycle_id",
+            "module_ids",
+        ]
+    ] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_changes(self) -> "BulkUpdateIssuesArguments":
+        if len(set(self.fields_to_update)) != len(self.fields_to_update):
+            raise ValueError("fields_to_update must not contain duplicates")
+        return self
+
+
+class ArchiveIssuesArguments(StrictModel):
+    project_id: UUID
+    issue_ids: list[UUID] = Field(min_length=1, max_length=25)
