@@ -5,7 +5,7 @@
  */
 
 import type { AxiosRequestConfig } from "axios";
-import axios from "axios";
+import axios, { isCancel } from "axios";
 // services
 import { APIService } from "@/services/api.service";
 
@@ -18,13 +18,15 @@ export class FileUploadService extends APIService {
 
   async uploadFile(
     url: string,
-    data: FormData,
+    data: FormData | File,
     uploadProgressHandler?: AxiosRequestConfig["onUploadProgress"]
   ): Promise<void> {
+    // eslint-disable-next-line import/no-named-as-default-member
     this.cancelSource = axios.CancelToken.source();
-    return this.post(url, data, {
+    const request = data instanceof FormData ? this.post.bind(this) : this.put.bind(this);
+    return request(url, data, {
       headers: {
-        "Content-Type": "multipart/form-data",
+        "Content-Type": data instanceof FormData ? "multipart/form-data" : data.type,
       },
       cancelToken: this.cancelSource.token,
       withCredentials: false,
@@ -32,7 +34,7 @@ export class FileUploadService extends APIService {
     })
       .then((response) => response?.data)
       .catch((error) => {
-        if (axios.isCancel(error)) {
+        if (isCancel(error)) {
           console.log(error.message);
         } else {
           throw error?.response?.data;
