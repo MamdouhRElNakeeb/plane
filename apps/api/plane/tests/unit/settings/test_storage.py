@@ -123,6 +123,44 @@ class TestS3StorageSignedURLExpiration:
             "AWS_SECRET_ACCESS_KEY": "test-secret",
             "AWS_S3_BUCKET_NAME": "test-bucket",
             "AWS_REGION": "us-east-1",
+            "AWS_S3_UPLOAD_METHOD": "PUT",
+        },
+        clear=True,
+    )
+    @patch("plane.settings.storage.boto3")
+    def test_generate_presigned_post_delegates_to_put_when_configured(self, mock_boto3):
+        mock_s3_client = Mock()
+        mock_s3_client.generate_presigned_url.return_value = "https://test-url.com"
+        mock_boto3.client.return_value = mock_s3_client
+
+        storage = S3Storage()
+        result = storage.generate_presigned_post("test-object", "image/png", 1024)
+
+        mock_s3_client.generate_presigned_post.assert_not_called()
+        mock_s3_client.generate_presigned_url.assert_called_once_with(
+            "put_object",
+            Params={
+                "Bucket": "test-bucket",
+                "Key": "test-object",
+                "ContentType": "image/png",
+                "ContentLength": 1024,
+            },
+            ExpiresIn=3600,
+            HttpMethod="PUT",
+        )
+        assert result == {
+            "url": "https://test-url.com",
+            "method": "PUT",
+            "headers": {"Content-Type": "image/png"},
+        }
+
+    @patch.dict(
+        os.environ,
+        {
+            "AWS_ACCESS_KEY_ID": "test-key",
+            "AWS_SECRET_ACCESS_KEY": "test-secret",
+            "AWS_S3_BUCKET_NAME": "test-bucket",
+            "AWS_REGION": "us-east-1",
         },
         clear=True,
     )
