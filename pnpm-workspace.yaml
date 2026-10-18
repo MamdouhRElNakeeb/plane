@@ -192,6 +192,7 @@ catalog:
 
 overrides:
   express: "catalog:"
+  "remark-rehype>mdast-util-to-hast": "12.3.0"
   mdast-util-to-hast: 13.2.1
   valibot: 1.4.2
   glob: 11.1.0

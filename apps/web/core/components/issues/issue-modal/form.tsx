@@ -36,6 +36,7 @@ import {
   IssueProjectSelect,
   IssueTitleInput,
 } from "@/components/issues/issue-modal/components";
+import { IssueModalQueuedAttachments } from "@/components/issues/issue-modal/components/queued-attachments";
 // helpers
 // hooks
 import { useIssueModal } from "@/hooks/context/use-issue-modal";
@@ -50,7 +51,9 @@ export interface IssueFormProps {
   data?: Partial<TIssue>;
   issueTitleRef: React.MutableRefObject<HTMLInputElement | null>;
   isCreateMoreToggleEnabled: boolean;
+  queuedAttachments: File[];
   onAssetUpload: (assetId: string) => void;
+  onQueuedAttachmentsChange: (files: File[]) => void;
   onCreateMoreToggleChange: (value: boolean) => void;
   onChange?: (formData: Partial<TIssue> | null) => void;
   onClose: () => void;
@@ -76,7 +79,9 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
   const {
     data,
     issueTitleRef,
+    queuedAttachments,
     onAssetUpload,
+    onQueuedAttachmentsChange,
     onChange,
     onClose,
     onSubmit,
@@ -426,6 +431,15 @@ export const IssueFormRoot = observer(function IssueFormRoot(props: IssueFormPro
               )}
             >
               <div className="pb-3">
+                {!data?.id && !isDraft && (
+                  <div className="pb-3">
+                    <IssueModalQueuedAttachments
+                      files={queuedAttachments}
+                      onChange={onQueuedAttachmentsChange}
+                      disabled={isDisabled}
+                    />
+                  </div>
+                )}
                 <IssueDefaultProperties
                   control={control}
                   id={data?.id}

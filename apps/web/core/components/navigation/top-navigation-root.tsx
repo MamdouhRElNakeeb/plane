@@ -18,8 +18,10 @@ import { AppSidebarItem } from "@/components/sidebar/sidebar-item";
 import { InboxIcon } from "@plane/propel/icons";
 import useSWR from "swr";
 import { useWorkspaceNotifications } from "@/hooks/store/notifications";
+import { useWorkspacePaths } from "@/hooks/use-workspace-paths";
 // local imports
 import { StarUsOnGitHubLink } from "@/app/(all)/[workspaceSlug]/(projects)/star-us-link";
+import { CreteAIToggle } from "@/plane-web/components/crete-ai";
 
 export const TopNavigationRoot = observer(function TopNavigationRoot() {
   // router
@@ -29,6 +31,7 @@ export const TopNavigationRoot = observer(function TopNavigationRoot() {
   // store hooks
   const { unreadNotificationsCount, getUnreadNotificationsCount } = useWorkspaceNotifications();
   const { preferences } = useAppRailPreferences();
+  const { isAiPath } = useWorkspacePaths();
 
   const showLabel = preferences.displayMode === "icon_with_label";
 
@@ -60,6 +63,7 @@ export const TopNavigationRoot = observer(function TopNavigationRoot() {
       </div>
       {/* Additional Actions */}
       <div className="flex flex-1 shrink-0 items-center justify-end gap-1">
+        {!isAiPath && <CreteAIToggle />}
         <Tooltip tooltipContent="Inbox" position="bottom">
           <AppSidebarItem
             variant="link"

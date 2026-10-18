@@ -11,6 +11,7 @@ export type TIssueAttachment = {
   attributes: {
     name: string;
     size: number;
+    type?: string;
   };
   asset_url: string;
   issue_id: string;

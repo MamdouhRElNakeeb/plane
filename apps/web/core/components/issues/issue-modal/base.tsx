@@ -1,3 +1,4 @@
+// oxlint-disable no-shadow
 /**
  * Copyright (c) 2023-present Plane Software, Inc. and contributors
  * SPDX-License-Identifier: AGPL-3.0-only
@@ -64,6 +65,7 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
   const [createMore, setCreateMore] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [description, setDescription] = useState<string | undefined>(undefined);
+  const [queuedAttachments, setQueuedAttachments] = useState<File[]>([]);
   const [uploadedAssetIds, setUploadedAssetIds] = useState<string[]>([]);
   const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
   // store hooks
@@ -74,7 +76,7 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
   const { issues } = useIssues(storeType);
   const { issues: projectIssues } = useIssues(EIssuesStoreType.PROJECT);
   const { issues: draftIssues } = useIssues(EIssuesStoreType.WORKSPACE_DRAFT);
-  const { fetchIssue } = useIssueDetail();
+  const { createAttachment, fetchIssue } = useIssueDetail();
   const { allowedProjectIds, handleCreateUpdatePropertyValues, handleCreateSubWorkItem } = useIssueModal();
   const { getProjectByIdentifier } = useProject();
   // current store details
@@ -105,6 +107,7 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
     // and return to avoid activeProjectId being set to some other project
     if (!isOpen) {
       setActiveProjectId(null);
+      setQueuedAttachments([]);
       return;
     }
 
@@ -153,6 +156,7 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
 
     setActiveProjectId(null);
     setChangesMade(null);
+    setQueuedAttachments([]);
     onClose();
     handleDuplicateIssueModal(false);
   };
@@ -182,6 +186,8 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
         response = await createIssue(payload.project_id, payload);
       }
 
+      if (!response) throw new Error();
+
       // update uploaded assets' status
       if (uploadedAssetIds.length > 0) {
         await fileService.updateBulkProjectAssetsUploadStatus(
@@ -194,8 +200,6 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
         );
         setUploadedAssetIds([]);
       }
-
-      if (!response) throw new Error();
 
       // check if we should add issue to cycle/module
       if (!is_draft_issue) {
@@ -233,14 +237,35 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
         });
       }
 
+      let failedAttachmentCount = 0;
+      if (!is_draft_issue && queuedAttachments.length > 0) {
+        const attachmentProjectId = response.project_id ?? payload.project_id;
+        const attachmentBatchSize = 3;
+        const attachmentBatches = Array.from(
+          { length: Math.ceil(queuedAttachments.length / attachmentBatchSize) },
+          (_, index) => queuedAttachments.slice(index * attachmentBatchSize, (index + 1) * attachmentBatchSize)
+        );
+        failedAttachmentCount = await attachmentBatches.reduce<Promise<number>>(async (failedCountPromise, files) => {
+          const failedCount = await failedCountPromise;
+          const attachmentUploadResults = await Promise.allSettled(
+            files.map((file) => createAttachment(workspaceSlug.toString(), attachmentProjectId, response.id, file))
+          );
+          return failedCount + attachmentUploadResults.filter((result) => result.status === "rejected").length;
+        }, Promise.resolve(0));
+        setQueuedAttachments([]);
+      }
+
       setToast({
-        type: TOAST_TYPE.SUCCESS,
-        title: t("success"),
-        message: `${is_draft_issue ? t("draft_created") : t("issue_created_successfully")} `,
-        actionItems: !is_draft_issue && response?.project_id && (
+        type: failedAttachmentCount > 0 ? TOAST_TYPE.WARNING : TOAST_TYPE.SUCCESS,
+        title: failedAttachmentCount > 0 ? t("warning") : t("success"),
+        message:
+          failedAttachmentCount > 0
+            ? `${t("issue_created_successfully")}. ${t("attachment.error")}`
+            : `${is_draft_issue ? t("draft_created") : t("issue_created_successfully")} `,
+        actionItems: !is_draft_issue && response.project_id && (
           <CreateIssueToastActionItems
             workspaceSlug={workspaceSlug.toString()}
-            projectId={response?.project_id}
+            projectId={response.project_id}
             issueId={response.id}
           />
         ),
@@ -397,7 +422,9 @@ export const CreateUpdateIssueModalBase = observer(function CreateUpdateIssueMod
       cycle_id: data?.cycle_id ? data?.cycle_id : cycleId ? cycleId.toString() : null,
       module_ids: data?.module_ids ? data?.module_ids : moduleId ? [moduleId.toString()] : null,
     },
+    queuedAttachments: queuedAttachments,
     onAssetUpload: handleUpdateUploadedAssetIds,
+    onQueuedAttachmentsChange: setQueuedAttachments,
     onClose: handleClose,
     onSubmit: (payload) => handleFormSubmit(payload, isDraft),
     projectId: activeProjectId,

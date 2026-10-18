@@ -4,6 +4,7 @@
  * See the LICENSE file for details.
  */
 
+import { useState } from "react";
 import { observer } from "mobx-react";
 
 import { useTranslation } from "@plane/i18n";
@@ -18,6 +19,8 @@ import { convertBytesToSize, getFileExtension, getFileName, getFileURL, renderFo
 //
 import { ButtonAvatars } from "@/components/dropdowns/member/avatar";
 import { getFileIcon } from "@/components/icons";
+import { CreteAttachmentPreviewModal } from "./crete-attachment-preview-modal";
+import { getCreteAttachmentPreviewKind } from "./crete-attachment-preview.utils";
 // helpers
 // hooks
 import { useIssueDetail } from "@/hooks/store/use-issue-detail";
@@ -34,6 +37,8 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
   const { t } = useTranslation();
   // props
   const { attachmentId, disabled, issueServiceType = EIssueServiceType.ISSUES } = props;
+  // state
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   // store hooks
   const { getUserDetails } = useMember();
   const {
@@ -46,6 +51,11 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
   const fileExtension = getFileExtension(attachment?.attributes.name ?? "");
   const fileIcon = getFileIcon(fileExtension, 18);
   const fileURL = getFileURL(attachment?.asset_url ?? "");
+  const previewKind = getCreteAttachmentPreviewKind(
+    attachment?.attributes.name ?? "",
+    attachment?.attributes.type,
+    attachment?.attributes.size
+  );
   // hooks
   const { isMobile } = usePlatformOS();
 
@@ -54,10 +64,19 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
   return (
     <>
       <button
+        type="button"
+        aria-haspopup={previewKind ? "dialog" : undefined}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          window.open(fileURL, "_blank");
+
+          if (!fileURL) return;
+          if (previewKind) {
+            setIsPreviewOpen(true);
+            return;
+          }
+
+          window.open(fileURL, "_blank", "noopener,noreferrer");
         }}
       >
         <div className="group flex h-11 items-center justify-between gap-3 pr-2 pl-9 hover:bg-surface-2">
@@ -101,6 +120,16 @@ export const IssueAttachmentsListItem = observer(function IssueAttachmentsListIt
           </div>
         </div>
       </button>
+
+      {fileURL && previewKind && (
+        <CreteAttachmentPreviewModal
+          fileName={attachment.attributes.name}
+          fileURL={fileURL}
+          isOpen={isPreviewOpen}
+          onClose={() => setIsPreviewOpen(false)}
+          previewKind={previewKind}
+        />
+      )}
     </>
   );
 });

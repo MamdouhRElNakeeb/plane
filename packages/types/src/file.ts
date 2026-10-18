@@ -25,7 +25,9 @@ export type TFileSignedURLResponse = {
   asset_url: string;
   upload_data: {
     url: string;
-    fields: {
+    method?: "POST" | "PUT";
+    headers?: Record<string, string>;
+    fields?: {
       "Content-Type": string;
       key: string;
       "x-amz-algorithm": string;
